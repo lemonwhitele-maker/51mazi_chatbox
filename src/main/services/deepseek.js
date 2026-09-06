@@ -3,12 +3,16 @@
  * 在主进程中处理所有 DeepSeek API 调用
  */
 
-const DEEPSEEK_API_BASE = 'https://api.deepseek.com'
-const DEFAULT_MODEL = 'deepseek-chat' // 或 'deepseek-reasoner' 用于推理任务
+import { requestAgentCompletion } from './agentCompletionClient.js'
 
-class DeepSeekService {
+const DEEPSEEK_API_BASE = 'https://api.deepseek.com'
+const DEFAULT_MODEL = 'deepseek-v4-flash'
+
+export class DeepSeekService {
   constructor() {
     this.apiKey = null
+    this.apiKeyProvider = null
+    this.agentConfigService = null
     this.baseURL = DEEPSEEK_API_BASE
     // 请求频率限制：每分钟最多 10 次请求
     this.rateLimit = {
@@ -28,10 +32,22 @@ class DeepSeekService {
     this.apiKey = apiKey
   }
 
+  setAgentConfigService(service) {
+    this.agentConfigService = service || null
+  }
+
+  setApiKeyProvider(provider) {
+    this.apiKeyProvider = provider
+  }
+
   /**
    * 获取 API Key（从 electron-store）
    */
   async getApiKey() {
+    if (this.agentConfigService) {
+      try { return this.agentConfigService.getProvider().apiKey || null } catch { /* 尚未配置 Agent API */ }
+    }
+    if (this.apiKeyProvider) return this.apiKeyProvider() || null
     if (this.apiKey) return this.apiKey
     // 从 store 中读取（需要外部传入 store 实例）
     return null
@@ -42,7 +58,8 @@ class DeepSeekService {
    * @param {Function} getStoreValue - 获取 store 值的函数
    */
   async initApiKey(getStoreValue) {
-    if (!this.apiKey && getStoreValue) {
+    if (this.agentConfigService) return this.getApiKey()
+    if (getStoreValue) {
       this.apiKey = getStoreValue('deepseek.apiKey') || null
     }
     return this.apiKey
@@ -117,9 +134,10 @@ class DeepSeekService {
    * @returns {Promise<Object>} API 响应
    */
   async chat(options = {}) {
-    if (!this.apiKey) {
-      throw new Error('DeepSeek API Key 未设置，请在设置中配置')
-    }
+    let agentProvider = null
+    if (this.agentConfigService) agentProvider = this.agentConfigService.getProvider()
+    const apiKey = this.apiKeyProvider ? this.apiKeyProvider() : this.apiKey
+    if (!agentProvider && !apiKey) throw new Error('Agent API 尚未配置，请在 AI 设置中配置模型')
 
     // 生成请求 ID
     const requestId = options.requestId || this.generateRequestId(options)
@@ -133,22 +151,45 @@ class DeepSeekService {
         model = DEFAULT_MODEL,
         temperature = 0.7,
         max_tokens = 2000,
-        stream = false
+        stream = false,
+        thinking = false
       } = options
+
+      if (agentProvider) {
+        if (stream) throw new Error('当前 Agent API 暂不支持旧版流式写作调用')
+        const response = await requestAgentCompletion({
+          provider: agentProvider,
+          messages,
+          tools: [],
+          maxTokens: max_tokens,
+          temperature
+        })
+        this.clearRequest(requestId)
+        return {
+          success: true,
+          content: typeof response.message.content === 'string' ? response.message.content : '',
+          reasoningContent: response.message.reasoning_content || '',
+          usage: response.usage || {}
+        }
+      }
+
+      const requestBody = {
+        model,
+        messages,
+        max_tokens,
+        stream,
+        thinking: { type: thinking ? 'enabled' : 'disabled' }
+      }
+      // DeepSeek ignores sampling parameters in thinking mode. Omitting them keeps the request explicit.
+      if (!thinking) requestBody.temperature = temperature
 
       const response = await fetch(`${this.baseURL}/chat/completions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.apiKey}`
+          Authorization: `Bearer ${apiKey}`
         },
-        body: JSON.stringify({
-          model,
-          messages,
-          temperature,
-          max_tokens,
-          stream
-        })
+        body: JSON.stringify(requestBody)
       })
       if (!response.ok) {
         const error = await response.json().catch(() => ({
@@ -186,6 +227,7 @@ class DeepSeekService {
       return {
         success: true,
         content: data.choices[0]?.message?.content || '',
+        reasoningContent: data.choices[0]?.message?.reasoning_content || '',
         usage: data.usage || {}
       }
     } catch (error) {
@@ -351,97 +393,6 @@ class DeepSeekService {
   }
 
   /**
-   * 章节润色：对整章正文进行 AI 润色，返回更优质的版本（仅正文，无解释）
-   * @param {string} text - 待润色的章节正文（整章纯文本）
-   * @returns {Promise<string>} 润色后的章节正文
-   */
-  async polishChapter(text) {
-    if (!text || typeof text !== 'string' || !text.trim()) {
-      throw new Error('待润色内容不能为空')
-    }
-
-    const messages = [
-      {
-        role: 'system',
-        content:
-          '你是一名专业的中文写作编辑，擅长润色网文、小说。请对用户提供的整章正文进行润色：优化表达、修正语病、增强可读性，保持原意与风格，段落结构保持合理。只输出润色后的整章正文内容，不要添加任何解释、标题或前后缀。'
-      },
-      {
-        role: 'user',
-        content: text.trim()
-      }
-    ]
-
-    const requestId = `polishChapter_${Date.now()}`
-    const result = await this.chat({
-      messages,
-      temperature: 0.5,
-      max_tokens: 8000, // 整章可能较长，提高上限
-      requestId
-    })
-
-    const content = (result.content || '').trim()
-    if (!content) {
-      throw new Error('润色结果为空，请重试')
-    }
-    return content
-  }
-
-  /**
-   * 章节续写：在不改变原文的前提下承接上文继续写作，仅输出续写内容（不重复上文、不加解释）。
-   * @param {string} text - 当前章节正文（纯文本）
-   * @param {string} prompt - 用户续写要求（可选）
-   * @param {number} maxAddWords - 允许续写的最大字数（按“字数统计规则”近似为字符数）
-   * @returns {Promise<string>} 续写内容（仅新增段落）
-   */
-  async continueChapter(text, prompt = '', maxAddWords = 0) {
-    const baseText = typeof text === 'string' ? text.trim() : ''
-    if (!baseText) {
-      throw new Error('当前章节内容为空，无法续写')
-    }
-
-    const maxWords = Number.isFinite(Number(maxAddWords)) ? Math.max(0, Math.floor(maxAddWords)) : 0
-    if (maxWords <= 0) {
-      throw new Error('可续写字数不足，请新建章节')
-    }
-
-    const extraRequirement = String(prompt || '').trim()
-    const requirementText = extraRequirement ? `\n\n续写要求：\n${extraRequirement}\n` : ''
-
-    const messages = [
-      {
-        role: 'system',
-        content:
-          `你是一名专业的中文小说写作者。请在不改变用户原文的前提下，承接上文继续写作。\n` +
-          `要求：\n` +
-          `- 只输出“续写新增的正文内容”，不要重复原文，不要输出标题、提纲、解释或任何前后缀。\n` +
-          `- 保持与原文一致的人称、时态、语气与风格，段落结构自然。\n` +
-          `- 续写长度尽量控制在 ${maxWords} 字以内（以中文字符计数的近似，不要超过）。\n`
-      },
-      {
-        role: 'user',
-        content: `原文：\n${baseText}\n${requirementText}\n请直接输出续写内容：`
-      }
-    ]
-
-    // token 估算：中文 1 字通常约 1-2 token，这里给足但限制上限，尽量减少超长输出概率
-    const estimatedMaxTokens = Math.min(8000, Math.max(256, Math.ceil(maxWords * 2)))
-    const requestId = `continueChapter_${Date.now()}`
-    const result = await this.chat({
-      messages,
-      temperature: 0.7,
-      max_tokens: estimatedMaxTokens,
-      requestId
-    })
-
-    const content = (result.content || '').trim()
-    if (!content) {
-      throw new Error('续写结果为空，请重试')
-    }
-    return content
-  }
-
-  /**
    * 根据小说节选生成适合文生图的中文画面描述（不含解释，仅描述可视内容）
    * @param {string} excerpt - 用户选中的正文节选
    * @returns {Promise<string>} 建议不超过约 200 字的画面描述
@@ -487,8 +438,8 @@ class DeepSeekService {
   async validateApiKey() {
     const requestId = `validateApiKey_${Date.now()}`
     try {
-      if (!this.apiKey) {
-        return { isValid: false, message: 'API Key 未设置' }
+      if (!this.agentConfigService && !(await this.getApiKey())) {
+        return { isValid: false, message: 'Agent API 未设置' }
       }
 
       // 发送一个简单的测试请求

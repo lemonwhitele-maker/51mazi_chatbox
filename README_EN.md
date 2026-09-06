@@ -12,14 +12,15 @@
 - [Core Features](#core-features)
   - [Multi-Book Management System](#multi-book-management-system)
   - [AI Cover Generation](#ai-cover-generation)
-  - [AI Character Image Generation](#ai-character-image-generation)
+  - [Avatars and Character Images](#avatars-and-retained-image-support)
+  - [API Settings and Library Transfers](#api-settings-and-library-transfers)
   - [AI Scene Image](#ai-scene-image)
   - [Professional Writing Experience](#professional-writing-experience)
   - [Map Design Tool](#map-design-tool)
   - [Relationship Graph Management](#relationship-graph-management)
   - [Dictionary Management](#dictionary-management)
   - [Random Name Generator](#random-name-generator)
-  - [Character Profile Management](#character-profile-management)
+  - [Character, Setting, and Outline Documents](#knowledge-documents)
   - [Timeline Management](#timeline-management)
   - [Event Sequence Diagram Management](#event-sequence-diagram-management)
   - [Organization Structure Management](#organization-structure-management)
@@ -41,9 +42,7 @@
 <span id="software-overview"></span>
 ## 🎯 Software Overview
 
-**51mazi** is a desktop novel writing software developed with Electron + Vue 3 technology stack, specifically designed for novel creators. It not only provides a professional writing environment but also integrates creative assistance tools such as map design, relationship graphs, character profiles, AI-assisted creation, and novel download, making novel writing more efficient and enjoyable.
-
-![Software Homepage](https://raw.githubusercontent.com/xiaoshengxianjun/51mazi/main/static/home.png)
+**51mazi** is a desktop novel writing software developed with Electron + Vue 3 technology stack, specifically designed for novel creators. It not only provides a professional writing environment but also integrates creative assistance tools such as map design, relationship graphs, Markdown knowledge documents, AI-assisted creation, and novel download, making novel writing more efficient and enjoyable.
 
 *Software Homepage Interface - Clean and Beautiful Bookshelf Management Interface*
 
@@ -68,26 +67,35 @@ The software uses a bookshelf-style management system, supporting the creation, 
 <span id="ai-cover-generation"></span>
 #### 🤖 AI Cover Generation
 
-![AI cover example](https://raw.githubusercontent.com/xiaoshengxianjun/51mazi/main/static/ai_cover.png)
-
 In the **Create/Edit Book** drawer, click **AI Cover Generation** to generate multiple candidate covers based on the title and pen name. Pick one, click **Confirm Use**, then save the book — the cover will appear on the bookshelf.
 
-<span id="ai-character-image-generation"></span>
-### 🎨 AI Character Image Generation
+<span id="avatars-and-retained-image-support"></span>
+### 🎨 Avatars and Character Images
 
-![AI character image example](https://raw.githubusercontent.com/xiaoshengxianjun/51mazi/main/static/ai_character.png)
+Generate a **720×1280 portrait** in the current **character document** workspace. Preview a candidate and click **Use image and save character** to save one avatar together with the current character text. Character lists show thumbnails. If a version conflict or save error occurs, the editor contents and candidate images remain available for retry.
 
-In the **Character Profile** edit drawer, click **AI Generate Character Image** to choose an art style (e.g. anime, Ghibli-style, photorealistic), fill in appearance description and pose. The app generates multiple vertical full-body character images; pick one and click **Confirm Use** to add it to that character’s image list. You can save multiple images per character in different styles or poses.
+Confirmed images are saved in the book's `character_images` folder and referenced by paths relative to that book, so copying the complete book or library keeps them available. Cancelling generation clears only the current session's temporary images; previously saved images are not deleted automatically. Linked character nodes in the **relationship graph** can refresh their avatars, while manually chosen node images remain independent.
+
+Each character has one avatar. The old character profile form and gallery remain retired, and old character documents are not migrated automatically.
+
+<span id="api-settings-and-library-transfers"></span>
+### 🔑 API Settings and Library Transfers
+
+API settings remain shared across the application. Select a library folder, such as `BookList`, before saving AI settings. Chat models, the function API, DeepSeek, Tongyi Wanxiang, Gemini, Doubao, and the last selected image provider are stored together in **`BookList/.51mazi/api-config.json`**.
+
+The first migration backs up only the old API settings inside the library's `.51mazi` folder. The original application's API entries are removed only after the new file is written and verified. Existing destination values take precedence, with missing settings filled from the old configuration. Failures preserve the original settings. Ordinary preferences, such as theme and window state, remain in application storage.
+
+To move to another computer, copy the **complete BookList, including `.51mazi`**, then select that library in the app to load books, saved character images, and in-app API settings. Switching to a library with an existing configuration uses that configuration; an unconfigured destination receives the current shared settings. External Codex installation, login, and configuration, and unsaved editing drafts, must be handled separately.
+
+Novel text exports do not include API settings. When sharing an entire library directly, exclude its API configuration and migration backups from `.51mazi`.
 
 <span id="ai-scene-image"></span>
 ### 🖼️ AI Scene Image
 
-![AI scene image example](https://raw.githubusercontent.com/xiaoshengxianjun/51mazi/main/static/ai_scene.png)
-
 On the **chapter editor** page, select a passage of body text, then click **AI Scene Image** in the **top-right** of the editing area (below **AI Continuation**). The selection must be within roughly **100–1000 effective characters** (same word-count rules as the rest of the app, whitespace excluded). After validation, a **right-side drawer** opens where you can configure:
 
 - **Output size**: Landscape **1280×720** (default) or square **1280×1280**
-- **Art style / shot / environment / lighting**: Similar style presets as character images, plus scene-oriented options
+- **Art style / shot / environment / lighting**: Choose an art style and scene composition options
 - **Scene description**: Prefilled from the selection; you can refine it into a more **visual** prompt (up to 500 characters)
 - **Refine scene with DeepSeek (optional)**: Compresses the full selection into a shorter image prompt; requires a DeepSeek API key
 - **Negative prompt (optional)**: Reduces blur, deformities, watermarks, etc.
@@ -96,8 +104,6 @@ Images are generated by **Tongyi Wanxiang** and saved **directly** under the boo
 
 <span id="professional-writing-experience"></span>
 ### ✍️ Professional Writing Experience
-
-![Editor Interface](https://raw.githubusercontent.com/xiaoshengxianjun/51mazi/main/static/editor.png)
 
 *Professional Writing Editor Interface - Rich Text Editor Based on TipTap*
 
@@ -120,8 +126,6 @@ Images are generated by **Tongyi Wanxiang** and saved **directly** under the boo
 
 <span id="map-design-tool"></span>
 ### 🗺️ Map Design Tool
-
-![Map Design](https://raw.githubusercontent.com/xiaoshengxianjun/51mazi/main/static/maps.png)
 
 *Powerful Map Design Tool - Professional Canvas Drawing and Resource Management*
 
@@ -149,8 +153,6 @@ The map design tool is a major highlight of this software, providing professiona
 <span id="relationship-graph-management"></span>
 ### 👥 Relationship Graph Management
 
-![Relationship Graph](https://raw.githubusercontent.com/xiaoshengxianjun/51mazi/main/static/relation.png)
-
 *Visual Relationship Graph - Clearly Displaying Character Relationship Networks*
 
 The relationship graph feature helps authors better manage complex character relationships:
@@ -171,12 +173,9 @@ The dictionary feature provides powerful vocabulary management capabilities for 
 - **Drag-and-Drop Sorting**: Supports dragging to adjust entry order and hierarchy
 - **Quick Search**: Supports keyword search to quickly locate target entries
 - **Data Persistence**: Local file storage ensures data security
-- **Character Profile Integration**: Entries can serve as character tags, achieving vocabulary and character association
 
 <span id="random-name-generator"></span>
 ### 🎲 Random Name Generator
-
-![Random Names](https://raw.githubusercontent.com/xiaoshengxianjun/51mazi/main/static/random-name.png)
 
 *Intelligent Random Name Generator - Providing Inspiration for Character Naming*
 
@@ -195,41 +194,26 @@ The random name generator provides powerful naming assistance for novel creation
 - **Seamless Switching**: Free switching between AI generation and local generation
 - **Rate Limiting**: Intelligently controls API call frequency to avoid excessive use
 
-<span id="character-profile-management"></span>
-### 👤 Character Profile Management
+<span id="knowledge-documents"></span>
+### 👤 Character, Setting, and Outline Documents
 
-![Character Profile](https://raw.githubusercontent.com/xiaoshengxianjun/51mazi/main/static/character-profile.png)
+Characters, settings, and outlines now use independent **Markdown knowledge documents**. Authors can adapt the content and sections to their work while retaining stable identifiers, tags, and document references.
 
-*Detailed Character Profile Management - Recording Character Information and Background*
+- **Document editing**: Create, find, and edit documents in each workspace, then save them in the current book directory.
+- **References**: Inspect linked documents and backlinks; organize outlines with tags, ordering, and chapter links.
+- **Assistant collaboration**: The assistant can read documents and propose changes for the author to confirm before writing.
+- **Outline navigation**: Open the outline workspace from the book toolbar. The compact outline tree and old outline AI draft workbench have been removed.
+- **Avatars**: Character documents support generating and saving one portrait, list thumbnails, and avatar updates for linked relationship graph nodes. The old profile form and image gallery remain retired.
 
-Character profiles (character roster) help authors manage role information in a structured way, with multiple view and edit options:
-
-- **Dual View Modes**: Switch between **Card** and **Table** views; the app remembers the last choice per book
-- **Drawer Editing**: Create/edit characters in a right-side drawer so the form and list stay visible
-- **Basic Info**: Name, gender, age, height, appearance notes, biography, tags, marker color
-- **Avatar**: Image URL or local file for list and card thumbnails
-- **Character Image List**: Support for multiple vertical full-body character images (different styles or poses)
-  - Table view has a character image column (multiple thumbnails); card view shows the image list below the card
-  - When editing, add images via **Choose Local Image** or **AI Generate Character Image**; each image can be removed
-  - Images are stored under the book folder in `character_images`
-- **AI Generate Character Image**: Integrated with Tongyi Wanxiang; one-click generation of vertical full-body images (720×1280)
-  - **Style options**: Anime, Ghibli-style, retro anime, photorealistic, 3D render, Western cartoon, Chinese-style illustration, watercolor, ink wash, thick paint, cyberpunk, pixel art, etc.
-  - **Composition & pose**: Full-body standing, half-body, dynamic pose, etc.
-  - Appearance description can be prefilled from the character’s “Appearance” field; generate multiple images, then pick one to confirm and add to the list
-- **Drag to Sort**: In table mode, drag rows to reorder characters; order is saved automatically
-- **Data Persistence**: Character data and image paths stored locally and linked with dictionary tags
+This cleanup removes feature code without deleting files in user book directories. Automatic migration of old character JSON/HTML, categorized setting JSON, outline trees, and outline AI drafts to the new documents is not supported. Existing files remain in place and do not automatically appear in the new workspace.
 
 <span id="timeline-management"></span>
 ### 📅 Timeline Management
-
-![Timeline](https://raw.githubusercontent.com/xiaoshengxianjun/51mazi/main/static/timeline.png)
 
 *Timeline Management Tool - Organizing Story Development Threads*
 
 <span id="event-sequence-diagram-management"></span>
 ### 📊 Event Sequence Diagram Management
-
-![Event Sequence](https://raw.githubusercontent.com/xiaoshengxianjun/51mazi/main/static/events-sequence.png)
 
 *Visual Event Sequence Diagram Management - Intuitively Displaying Event Timeline and Progress*
 
@@ -247,8 +231,6 @@ The event sequence diagram feature provides powerful timeline management capabil
 <span id="organization-structure-management"></span>
 ### 🏢 Organization Structure Management
 
-![Organization Structure](https://raw.githubusercontent.com/xiaoshengxianjun/51mazi/main/static/organization.png)
-
 *Visual Organization Structure Management - Clearly Displaying Organizational Structure and Hierarchy*
 
 The organization structure feature provides powerful organizational management capabilities for novel creation:
@@ -262,8 +244,6 @@ The organization structure feature provides powerful organizational management c
 
 <span id="download-novels"></span>
 ### 📥 Download Novels
-
-![Download Novels](https://raw.githubusercontent.com/xiaoshengxianjun/51mazi/main/static/novelDownload.png)
 
 *Download Novels page - Multi-source search; after selecting a book, the floating bottom action area supports adding to bookshelf or exporting as TXT*
 
@@ -325,7 +305,6 @@ Based on the Electron framework, supports Windows, macOS, Linux, and other platf
   - **AI Random Naming (DeepSeek)**: Multiple name types and parameters, with automatic fallback to local generation when AI fails
   - **AI Polishing / AI Continuation (DeepSeek)**: Polish the selection or the whole chapter; continuation supports optional instructions, respects the 120% target-word cap, and can be inserted at chapter end
   - **AI Novel Cover (Tongyi Wanxiang)**: Generate multiple covers by title/pen name/size/prompt and set one as the book cover
-  - **AI Character Image (Tongyi Wanxiang)**: In Character Profile, generate vertical full-body character images by style and appearance description; support multiple images per character for different styles/poses
   - **AI Scene Image (Tongyi Wanxiang + optional DeepSeek)**: Generate scene illustrations from selected chapter text; saved to `scene_images`; optional DeepSeek step to turn prose into an image prompt
 - **Download novels**: Multi-source search, add to bookshelf or export as TXT, with floating bottom action bar and progress display
 - Relationship graph management for complex character relationships with avatar and dynamic font support
@@ -333,7 +312,7 @@ Based on the Electron framework, supports Windows, macOS, Linux, and other platf
 - Organization structure management to display organizational structure and hierarchy
 - Dictionary management for vocabulary systems with tree structure and drag-and-drop sorting support
 - Random name generator providing creative inspiration (supports both AI and local modes)
-- Character profile (character roster) for recording character info, with character image list and Tongyi Wanxiang AI character image generation
+- Markdown character, setting, and outline documents with references and assistant change proposals
 - Intelligent book management with bookshelf password protection and book password protection
 
 ### 5. User-Friendly Interface
@@ -357,8 +336,7 @@ Based on the Electron framework, supports Windows, macOS, Linux, and other platf
 | Event Sequence Management | ✅ Timeline Visualization, Progress Tracking | ❌ Lack of Time Management |
 | Organization Structure | ✅ Visual Organization Management | ❌ Lack of Organization Management |
 | Dictionary | ✅ Tree Structure, Drag-and-Drop Sorting | ❌ Lack of Vocabulary Management |
-| AI Assistance | ✅ DeepSeek naming/polish/continuation + Tongyi Wanxiang cover/character/scene image | ❌ Lack of AI Features |
-| Character Image Management | ✅ Multiple character images, AI full-body generation | ❌ Single avatar or external links only |
+| AI Assistance | ✅ DeepSeek naming/polish/continuation + Tongyi Wanxiang cover/scene image | ❌ Lack of AI Features |
 | Smart Operations | ✅ Intelligent Drag-and-Drop, Keyboard Shortcut Support | ❌ Cumbersome Operations |
 | Multiple Themes | ✅ Multiple Themes | ❌ Single Theme |
 | User Guide | ✅ Built-in Complete Guide | ❌ Requires External Documentation |
@@ -388,7 +366,7 @@ Based on the Electron framework, supports Windows, macOS, Linux, and other platf
    - Use paragraph dragging to flexibly organize content
 6. (Optional) Open **AI Settings** from the left menu, configure DeepSeek / Tongyi Wanxiang API keys, and click “Validate”
 7. (Optional) Use **AI Cover Generation** in the book create/edit drawer: fill in title & type, generate covers and confirm one
-8. (Optional) In Character Profile, add **character images** for a role: choose a local image or click **AI Generate Character Image**, select style and fill appearance description to generate vertical full-body images; you can save multiple images per character
+8. Open the character workspace and create Markdown documents for character backgrounds, current state, and confirmed facts
 9. (Optional) On the chapter editor, select a passage (~100–1000 effective characters), click **AI Scene Image**, adjust style and description in the drawer, then generate (Tongyi Wanxiang key required; optional DeepSeek refinement)
 10. Try the map design tool
    - Use brush tool to draw terrain outlines
@@ -400,14 +378,14 @@ Based on the Electron framework, supports Windows, macOS, Linux, and other platf
    - Configure DeepSeek API Key in settings (optional)
    - Use AI intelligent naming to generate character names
    - Try different parameter settings to experience AI's intelligent understanding capabilities
-14. In Character Profile, complete characters: fill in appearance and biography, and add multiple character images (different styles or poses) for the same character
+14. Add setting and outline documents, using references to connect characters, settings, and chapters
 15. (Optional) Use Download Novels: from the left menu open "Download Novels", choose a source, enter title or author to search, then "Download and Add to Bookshelf" or "Export as TXT"; the action bar floats at the bottom so you can see progress while scrolling
 
 ### Advanced Usage
 1. Use timeline to manage story development
 2. Use event sequence diagram to plan event timeline and progress (supports drag-and-drop adjustment)
 3. Use organization structure management to display organizational structure and hierarchy
-4. Use character profiles to record detailed information, associating tags from the dictionary; add multiple character images (local or AI-generated) per character, using style and composition options for different full-body portraits
+4. Organize characters, settings, and outlines in Markdown documents; inspect references and review changes proposed by the assistant
 5. Use **AI Scene Image** on key paragraphs: try different styles and “Refine scene with DeepSeek”; keep outputs in `scene_images` as chapter references or asset archives
 6. Use the novel download feature: multi-source search, then download to local or export as TXT for reference and personal backup (please comply with copyright and local regulations)
 7. Combine map design to build worldviews
@@ -437,12 +415,12 @@ As an open-source novel writing software, 51mazi has great development potential
   - ✅ **AI Random Naming (DeepSeek)**: Multiple types and parameters; falls back to local generation on failure
   - ✅ **AI Polishing / AI Continuation (DeepSeek)**: Polish selection or whole chapter; continuation with optional instructions, insert at chapter end
   - ✅ **AI Novel Cover (Tongyi Wanxiang)**: Covers from title/pen name/style and size
-  - ✅ **AI Character Image (Tongyi Wanxiang)**: Vertical full-body images, multiple styles and poses, multiple images per character
+- ✅ **Character Avatars**: The Markdown character workspace now supports image generation, candidate confirmation, saving the current text with its avatar, and refreshing linked relationship graph avatars
   - ✅ **AI Scene Image (Tongyi Wanxiang + optional DeepSeek)**: Scene art from selected text, saved to `scene_images`; optional prose-to-prompt refinement
   - 🔮 **AI Summarization**: Automatically generate chapter summaries
   - 🔮 **AI Dialogue Generation**: Generate character dialogues
   - 🔮 **AI Plot Suggestions**: Provide plot suggestions based on existing content
-  - 🔮 **AI Outline Generation**: Generate novel outlines based on themes
+  - 🔮 **Outline Collaboration**: Continue improving Markdown outline organization and the change proposal workflow
 - **Plugin System**: Support for third-party plugin extensions
 - **Cloud Sync**: Optional cloud data synchronization
 - **Collaboration Features**: Multi-user collaborative creation
@@ -483,7 +461,7 @@ npm run build:linux
 - ✅ Bookshelf password + book password dual protection, ensuring creative security
 - ✅ Cross-platform support, convenient to use
 - ✅ Comprehensive features, meeting various creative needs
-- ✅ **AI-Assisted Creation**: DeepSeek naming/polish/continuation + Tongyi Wanxiang cover/character/scene image, improving creative efficiency
+- ✅ **AI-Assisted Creation**: DeepSeek naming/polish/continuation + Tongyi Wanxiang cover/scene image, improving creative efficiency
 - ✅ Intelligent editor features (character highlighting, forbidden word detection, paragraph dragging)
 - ✅ Professional map design tool with built-in resource library
 - ✅ Dictionary management with flexible tree structure organization
@@ -501,7 +479,7 @@ If you're looking for a professional novel writing software, 51mazi is definitel
 - **Website**: [www.51mazi.com](https://www.51mazi.com)
 - **Project Repository**: [GitHub - 51mazi](https://github.com/xiaoshengxianjun/51mazi)
 - **Technology Stack**: Electron + Vue 3 + TipTap + Element Plus + Pinia + DeepSeek + Tongyi Wanxiang
-- **Keywords**: Desktop Application, Rich Text Editing, Canvas Drawing, Relationship Graph, Novel Writing, Dictionary, Forbidden Word Detection, Character Highlighting, AI Assistance, AI Cover, AI Character Image, AI Scene Image, Text-to-Image, AI Writing, Intelligent Naming, Character Roster, Novel Download, Multi-source
+- **Keywords**: Desktop Application, Rich Text Editing, Canvas Drawing, Relationship Graph, Novel Writing, Dictionary, Forbidden Word Detection, Character Highlighting, AI Assistance, AI Cover, AI Scene Image, Text-to-Image, AI Writing, Intelligent Naming, Markdown Knowledge Documents, Novel Download, Multi-source
 
 <span id="contact--support"></span>
 ## 📞 Contact & Support
@@ -523,7 +501,7 @@ Thank you to everyone who supports this project! You can support via:
 
 <span id="tags"></span>
 ## 🏷️ Tags
-`#Electron` `#Vue3` `#DesktopApplication` `#RichTextEditing` `#CanvasDrawing` `#RelationshipGraph` `#NovelWriting` `#CharacterRoster` `#FrontendDevelopment` `#Dictionary` `#ForbiddenWordDetection` `#CharacterHighlighting` `#AIAssistance` `#AICovers` `#AICharacterImage` `#AISceneImage` `#TextToImage` `#AIWriting` `#TongyiWanxiang` `#DeepSeek` `#IntelligentNaming` `#NovelDownload`
+`#Electron` `#Vue3` `#DesktopApplication` `#RichTextEditing` `#CanvasDrawing` `#RelationshipGraph` `#NovelWriting` `#KnowledgeDocuments` `#FrontendDevelopment` `#Dictionary` `#ForbiddenWordDetection` `#CharacterHighlighting` `#AIAssistance` `#AICovers` `#AISceneImage` `#TextToImage` `#AIWriting` `#TongyiWanxiang` `#DeepSeek` `#IntelligentNaming` `#NovelDownload`
 
 ---
 

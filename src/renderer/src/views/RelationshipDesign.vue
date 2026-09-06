@@ -59,7 +59,9 @@
   </LayoutTool>
   <el-dialog
     v-model="infoDialogVisible"
-    :title="isAddMode ? t('relationshipDesign.addNodeTitle') : t('relationshipDesign.editNodeTitle')"
+    :title="
+      isAddMode ? t('relationshipDesign.addNodeTitle') : t('relationshipDesign.editNodeTitle')
+    "
     width="500px"
   >
     <el-form label-width="80px" @submit.prevent="saveNodeInfo">
@@ -109,8 +111,11 @@
           <el-input
             v-model="infoForm.avatar"
             :placeholder="t('relationshipDesign.avatarPlaceholder')"
+            @input="infoForm.avatarSource = 'custom'"
           />
-          <el-button @click="selectLocalImage">{{ t('characterProfile.selectLocalImage') }}</el-button>
+          <el-button @click="selectLocalImage">{{
+            t('characterProfile.selectLocalImage')
+          }}</el-button>
           <div v-if="infoForm.avatar" class="avatar-preview">
             <el-image
               :src="getAvatarSrc(infoForm.avatar)"
@@ -137,7 +142,11 @@
   </el-dialog>
 
   <!-- 连线编辑弹框 -->
-  <el-dialog v-model="edgeDialogVisible" :title="t('relationshipDesign.editEdgeTitle')" width="400px">
+  <el-dialog
+    v-model="edgeDialogVisible"
+    :title="t('relationshipDesign.editEdgeTitle')"
+    width="400px"
+  >
     <el-form label-width="80px" @submit.prevent="saveEdgeInfo">
       <el-form-item :label="t('relationshipDesign.edgeDescription')">
         <el-input
@@ -156,19 +165,28 @@
 
 <script setup>
 import LayoutTool from '@renderer/components/LayoutTool.vue'
-import { ref, reactive, onMounted, nextTick, computed } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount, nextTick, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { Check } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import RelationGraph from 'relation-graph-vue3'
 import RadialMenu from '@renderer/components/RadialMenu.vue'
 import { genId } from '@renderer/utils/utils'
+import {
+  getAvatarSrc as resolveAvatarSrc,
+  selectLocalAvatar,
+  syncCharacterAvatars
+} from '@renderer/utils/characterAvatar'
 import { useI18n } from 'vue-i18n'
 
 const route = useRoute()
 const { t } = useI18n()
 const bookName = route.query.name
 const relationshipName = route.query.id
+const booksDir = ref('')
+function getAvatarSrc(path) {
+  return resolveAvatarSrc(path, booksDir.value, bookName)
+}
 
 const saving = ref(false)
 const graphRef = ref(null)
@@ -221,14 +239,35 @@ const graphOptions = {
 const loadCharacters = async () => {
   try {
     const data = await window.electron.readCharacters(bookName)
+    const previous = characters.value
     characters.value = Array.isArray(data) ? data : []
     // 初始化过滤后的人物数据
     filteredCharacters.value = [...characters.value]
+    refreshLinkedAvatars(previous)
   } catch (error) {
     console.error('加载人物数据失败:', error)
     characters.value = []
     filteredCharacters.value = []
   }
+}
+
+function refreshLinkedAvatars(previous = characters.value) {
+  const changed = syncCharacterAvatars(
+    relationshipData.nodes,
+    characters.value,
+    previous,
+    booksDir.value,
+    bookName
+  )
+  const instance = getGraphInstance()
+  if (instance?.getNodes)
+    syncCharacterAvatars(instance.getNodes(), characters.value, previous, booksDir.value, bookName)
+  if (changed) instance?.dataUpdated?.()
+}
+
+function handleCharacterDocumentsChanged(event) {
+  if (event.detail?.bookName === bookName && event.detail?.scope === 'characters')
+    void loadCharacters()
 }
 
 // 加载关系图数据
@@ -287,6 +326,7 @@ const loadRelationshipData = async () => {
         nodes: migratedNodes,
         lines: migratedLines
       })
+      refreshLinkedAvatars()
       await graphRef.value.setJsonData(relationshipData)
       // const graphInstance = graphRef.value.getInstance()
       // await graphInstance.moveToCenter()
@@ -496,7 +536,8 @@ function handleNodeInfo() {
   infoForm.description = selectedNode.value.data?.description || ''
   // 如果有头像路径，转换为 file:// 协议以便预览
   const avatarPath = selectedNode.value.data?.avatar || ''
-  infoForm.avatar = getAvatarSrc(avatarPath)
+  infoForm.avatar = avatarPath
+  infoForm.avatarSource = selectedNode.value.data?.avatarSource || 'custom'
 
   // 检查当前节点文本是否对应已存在的人物
   const existingCharacter = characters.value.find((c) => c.name === selectedNode.value.text)
@@ -520,8 +561,9 @@ function handleNodeInfo() {
     )
     if (matchedCharacter) {
       // 如果节点没有头像或人物有头像，使用人物的头像
-      if (!infoForm.avatar && matchedCharacter.avatar) {
+      if (!infoForm.avatar && matchedCharacter.avatar && infoForm.avatarSource === 'character') {
         infoForm.avatar = matchedCharacter.avatar
+        infoForm.avatarSource = 'character'
       }
       // 同步人物的描述信息（如果节点没有描述）
       if (!infoForm.description && (matchedCharacter.biography || matchedCharacter.introduction)) {
@@ -650,12 +692,16 @@ function handleNodeDelete() {
 
   const nodeName = selectedNode.value.text || t('relationshipDesign.unknownNode')
 
-  ElMessageBox.confirm(t('relationshipDesign.deleteNodeConfirm', { name: nodeName }), t('relationshipDesign.deleteTitle'), {
-    confirmButtonText: t('relationshipDesign.confirmDelete'),
-    cancelButtonText: t('common.cancel'),
-    type: 'warning',
-    dangerouslyUseHTMLString: false
-  })
+  ElMessageBox.confirm(
+    t('relationshipDesign.deleteNodeConfirm', { name: nodeName }),
+    t('relationshipDesign.deleteTitle'),
+    {
+      confirmButtonText: t('relationshipDesign.confirmDelete'),
+      cancelButtonText: t('common.cancel'),
+      type: 'warning',
+      dangerouslyUseHTMLString: false
+    }
+  )
     .then(() => {
       syncGraphNodePositions()
 
@@ -725,7 +771,8 @@ const infoForm = reactive({
   color: '',
   description: '',
   characterId: '', // 选中的人物谱id
-  avatar: '' // 头像路径或链接
+  avatar: '', // 头像路径或链接
+  avatarSource: 'custom'
 })
 
 // 连线编辑弹窗相关
@@ -772,6 +819,7 @@ function onCharacterChange(val) {
     infoForm.color = character.gender === 'female' ? '#ff5819' : '#409eff'
     // 如果人物有头像，回填头像信息
     infoForm.avatar = character.avatar || ''
+    infoForm.avatarSource = 'character'
     customColor.value = ''
   } else {
     // 输入新名称，设置默认值
@@ -780,6 +828,7 @@ function onCharacterChange(val) {
     infoForm.description = ''
     infoForm.color = '#409eff'
     infoForm.avatar = '' // 清空头像
+    infoForm.avatarSource = 'custom'
     customColor.value = ''
   }
 }
@@ -806,10 +855,10 @@ function selectPresetColor(color) {
 // 选择本地图片
 async function selectLocalImage() {
   try {
-    const result = await window.electron.selectImage()
-    if (result && result.filePath) {
-      // 将本地文件路径转换为 file:// 协议，以便在浏览器中正确显示
-      infoForm.avatar = `file://${result.filePath}`
+    const avatar = await selectLocalAvatar()
+    if (avatar) {
+      infoForm.avatar = avatar
+      infoForm.avatarSource = 'custom'
       ElMessage.success(t('characterProfile.selectImageSuccess'))
     }
   } catch (error) {
@@ -826,6 +875,7 @@ function resetForm() {
   infoForm.description = ''
   infoForm.characterId = ''
   infoForm.avatar = ''
+  infoForm.avatarSource = 'custom'
   customColor.value = '#409eff'
 }
 
@@ -899,7 +949,8 @@ function saveNodeInfo() {
         description: infoForm.description || '',
         gender: infoForm.gender || 'male',
         characterId: nodeCharacterId,
-        avatar: infoForm.avatar ? infoForm.avatar.replace(/^file:\/\//, '') : '',
+        avatar: infoForm.avatar || '',
+        avatarSource: infoForm.avatarSource,
         fontSize: nodeSize.fontSize
       }
     }
@@ -952,7 +1003,7 @@ function saveNodeInfo() {
       }
       selectedNode.value.data.characterId = existingCharacter.id
       // 如果表单中没有头像但人物有头像，使用人物的头像
-      if (!infoForm.avatar && existingCharacter.avatar) {
+      if (!infoForm.avatar && existingCharacter.avatar && infoForm.avatarSource === 'character') {
         infoForm.avatar = existingCharacter.avatar
       }
       // 如果表单中没有描述但人物有描述，使用人物的描述
@@ -980,9 +1031,8 @@ function saveNodeInfo() {
     selectedNode.value.data.gender = infoForm.gender
     selectedNode.value.color = infoForm.color || customColor.value
     selectedNode.value.data.description = infoForm.description
-    selectedNode.value.data.avatar = infoForm.avatar
-      ? infoForm.avatar.replace(/^file:\/\//, '')
-      : ''
+    selectedNode.value.data.avatar = infoForm.avatar || ''
+    selectedNode.value.data.avatarSource = infoForm.avatarSource
 
     // 同步到数据源
     const node = relationshipData.nodes.find((n) => n.id === selectedNode.value.id)
@@ -999,6 +1049,7 @@ function saveNodeInfo() {
       node.data.description = selectedNode.value.data.description
       node.data.characterId = selectedNode.value.data.characterId
       node.data.avatar = selectedNode.value.data.avatar
+      node.data.avatarSource = selectedNode.value.data.avatarSource
     }
 
     // 使用增量更新而不是重新设置整个数据
@@ -1137,34 +1188,25 @@ function getNodeStyle(node) {
     width: node.width + 'px',
     height: node.height + 'px',
     backgroundColor: node.data?.avatar ? 'transparent' : node.color || '#409eff',
-    backgroundImage: node.data?.avatar ? `url(${getAvatarSrc(node.data.avatar)})` : 'none',
+    backgroundImage: node.data?.avatar
+      ? `url(${JSON.stringify(getAvatarSrc(node.data.avatar))})`
+      : 'none',
     fontSize: (node.data?.fontSize || 16) + 'px'
   }
-}
-
-// 获取头像源地址
-function getAvatarSrc(avatarPath) {
-  if (!avatarPath) return ''
-
-  // 如果已经是完整的URL（包含协议），直接返回
-  if (
-    avatarPath.startsWith('http://') ||
-    avatarPath.startsWith('https://') ||
-    avatarPath.startsWith('file://') ||
-    avatarPath.startsWith('data:')
-  ) {
-    return avatarPath
-  }
-
-  // 如果是本地文件路径，添加 file:// 协议
-  return `file://${avatarPath}`
 }
 
 onMounted(async () => {
   // 等待下一个 tick 确保图表组件完全挂载
   await nextTick()
-  loadCharacters()
-  loadRelationshipData()
+  booksDir.value = (await window.electronStore.get('booksDir')) || ''
+  await loadCharacters()
+  await loadRelationshipData()
+  window.addEventListener('focus', loadCharacters)
+  window.addEventListener('knowledge-documents-changed', handleCharacterDocumentsChanged)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('focus', loadCharacters)
+  window.removeEventListener('knowledge-documents-changed', handleCharacterDocumentsChanged)
 })
 </script>
 

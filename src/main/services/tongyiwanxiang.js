@@ -34,7 +34,7 @@ class TongyiwanxiangService {
    * @param {Function} getStoreValue - 获取 store 值的函数，如 (key) => store.get(key)
    */
   async initApiKey(getStoreValue) {
-    if (!this.apiKey && getStoreValue) {
+    if (getStoreValue) {
       this.apiKey = getStoreValue('tongyiwanxiang.apiKey') || null
     }
     return this.apiKey
@@ -49,7 +49,8 @@ class TongyiwanxiangService {
    * @returns {Promise<string>} 图片 URL
    */
   async generateCover(options = {}) {
-    if (!this.apiKey) {
+    const apiKey = options.apiKey === undefined ? this.apiKey : options.apiKey
+    if (!apiKey) {
       throw new Error('通义万相 API Key 未设置，请在设置中配置')
     }
 
@@ -82,7 +83,7 @@ class TongyiwanxiangService {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.apiKey}`
+        Authorization: `Bearer ${apiKey}`
       },
       body: JSON.stringify(body)
     })
@@ -137,9 +138,9 @@ class TongyiwanxiangService {
    * 校验 API Key 是否有效（可选：发一次最小请求做探活）
    * @returns {Promise<{isValid: boolean, message?: string}>}
    */
-  async validateApiKey() {
+  async validateApiKey(apiKey = this.apiKey) {
     try {
-      if (!this.apiKey) {
+      if (!apiKey) {
         return { isValid: false, message: 'API Key 未设置' }
       }
       // 仅检查是否已配置，不做真实请求以节省额度；若需真实校验可调 generateCover 再根据错误区分

@@ -7,6 +7,7 @@ export const useEditorStore = defineStore('editor', () => {
   const file = ref(null)
   const chapterTitle = ref('')
   const currentBookName = ref('')
+  const hasUnsavedChanges = ref(false)
 
   /**
    * 笔记正文在磁盘上为 HTML；`content` 仅为纯文本字数统计。
@@ -48,6 +49,7 @@ export const useEditorStore = defineStore('editor', () => {
     chapterWordBaseline.value = initialLength
     lastSyncedChapterWords.value = initialLength
     isInitializing.value = true // 标记为初始化状态
+    hasUnsavedChanges.value = false
   }
 
   // 记录字数变化
@@ -110,14 +112,27 @@ export const useEditorStore = defineStore('editor', () => {
     isInitializing.value = false
     chapterWordBaseline.value = 0
     lastSyncedChapterWords.value = 0
+    hasUnsavedChanges.value = false
   }
 
   function setContent(newContent, options = {}) {
     const oldContent = content.value
     content.value = newContent
+    if (options.isInitialLoad) hasUnsavedChanges.value = false
+    else if (!isInitializing.value) hasUnsavedChanges.value = true
 
     // 记录字数变化
     recordWordChange(oldContent, newContent, options)
+  }
+
+  function markSaved() {
+    hasUnsavedChanges.value = false
+  }
+
+  function updateFileSavedHash(savedHash) {
+    const normalized = typeof savedHash === 'string' && savedHash ? savedHash : null
+    if (!file.value || !normalized) return
+    file.value = { ...file.value, savedHash: normalized }
   }
 
   function clearNoteDraft() {
@@ -165,6 +180,7 @@ export const useEditorStore = defineStore('editor', () => {
       chapterWordBaseline.value = 0
       lastSyncedChapterWords.value = 0
     }
+    hasUnsavedChanges.value = false
   }
 
   // function normalizeTitleSpacing(title) {
@@ -294,6 +310,7 @@ export const useEditorStore = defineStore('editor', () => {
   return {
     content,
     file,
+    hasUnsavedChanges,
     noteDraftHtml,
     noteDraftPath,
     chapterTitle,
@@ -304,6 +321,8 @@ export const useEditorStore = defineStore('editor', () => {
     bookTotalWords,
     bookWordsLoaded,
     setContent,
+    markSaved,
+    updateFileSavedHash,
     setFile,
     applyNoteDraftFromDisk,
     updateNoteDraftHtml,

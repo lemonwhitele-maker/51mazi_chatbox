@@ -12,6 +12,7 @@ import { Decoration, DecorationSet } from 'prosemirror-view'
 import { Fragment } from 'prosemirror-model'
 import { Extension as PMExtension } from '@tiptap/core'
 import { useI18n } from 'vue-i18n'
+import { AgentDiffPreview } from '@renderer/extensions/AgentDiffPreview'
 
 const props = defineProps({
   editorStore: {
@@ -93,7 +94,8 @@ function getNoteExtensions() {
       HTMLAttributes: {
         class: 'search-highlight'
       }
-    })
+    }),
+    AgentDiffPreview
   ]
 }
 

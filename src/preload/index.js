@@ -9,6 +9,11 @@ const api = {}
 const customElectronAPI = {
   // --------- 书籍相关 ---------
   selectBooksDir: () => ipcRenderer.invoke('select-books-dir'),
+  onApiConfigDirectoryChanged: (callback) => {
+    const listener = (_, payload) => callback(payload)
+    ipcRenderer.on('api-config-directory-changed', listener)
+    return () => ipcRenderer.removeListener('api-config-directory-changed', listener)
+  },
   // 选择图片文件
   selectImage: () => ipcRenderer.invoke('select-image'),
   // 显示保存文件对话框
@@ -27,6 +32,125 @@ const customElectronAPI = {
   editBook: (bookInfo) => ipcRenderer.invoke('edit-book', bookInfo),
   // 编辑器新窗口打开
   openBookEditorWindow: (id, name) => ipcRenderer.invoke('open-book-editor-window', { id, name }),
+
+  // --------- 已保存书籍检索（只读正式磁盘版本）---------
+  listSavedBookStructure: (bookName, scopes, options = {}) =>
+    ipcRenderer.invoke('book:list-saved-structure', { bookName, scopes, mode: options.mode }),
+  searchSavedBookKnowledge: (bookName, query, options = {}) =>
+    ipcRenderer.invoke('book:search-saved-knowledge', {
+      bookName,
+      query,
+      scopes: options.scopes,
+      filters: options.filters,
+      limit: options.limit,
+      mode: options.mode
+    }),
+  readSavedBookSource: (bookName, reference, options = {}) =>
+    ipcRenderer.invoke('book:read-saved-source', {
+      bookName,
+      reference,
+      before: options.before,
+      after: options.after,
+      sectionKey: options.sectionKey,
+      heading: options.heading,
+      startLine: options.startLine,
+      endLine: options.endLine,
+      maxChars: options.maxChars,
+      includeParent: options.includeParent,
+      includeChildren: options.includeChildren
+    }),
+  readSavedBookBacklinks: (bookName, reference, options = {}) =>
+    ipcRenderer.invoke('book:read-backlinks', {
+      bookName,
+      reference,
+      includeWeak: options.includeWeak,
+      limit: options.limit
+    }),
+  readSavedOutlineContext: (bookName, reference, options = {}) =>
+    ipcRenderer.invoke('book:read-outline-context', {
+      bookName,
+      reference,
+      maxDepth: options.maxDepth,
+      maxRelated: options.maxRelated,
+      maxChars: options.maxChars
+    }),
+  refreshSavedBookIndex: (bookName) => ipcRenderer.invoke('book:refresh-saved-index', { bookName }),
+  // --------- 开放式知识文档 ---------
+  listKnowledgeDocuments: (bookName, scope, filters = {}) =>
+    ipcRenderer.invoke('knowledge:v2:list-documents', { bookName, scope, filters }),
+  createKnowledgeDocument: (bookName, scope, options = {}) =>
+    ipcRenderer.invoke('knowledge:v2:create-document', { bookName, scope, ...options }),
+  readKnowledgeDocument: (bookName, scope, documentId) =>
+    ipcRenderer.invoke('knowledge:v2:read-document', { bookName, scope, documentId }),
+  validateKnowledgeDocument: (scope, source, mode = 'formal') =>
+    ipcRenderer.invoke('knowledge:v2:validate-document', { scope, source, mode }),
+  writeKnowledgeDocument: (bookName, scope, documentId, source, expectedFileHash) =>
+    ipcRenderer.invoke('knowledge:v2:write-document', {
+      bookName,
+      scope,
+      documentId,
+      source,
+      expectedFileHash
+    }),
+  undoKnowledgeDocumentWrite: (bookName, undoToken, expectedCurrentHash) =>
+    ipcRenderer.invoke('knowledge:v2:undo-write', { bookName, undoToken, expectedCurrentHash }),
+  writeCharacterAvatar: (bookName, documentId, source, expectedFileHash, relativePath) =>
+    ipcRenderer.invoke('knowledge:v2:write-character-avatar', {
+      bookName,
+      documentId,
+      source,
+      expectedFileHash,
+      relativePath
+    }),
+  getKnowledgeIndexHealth: (bookName) =>
+    ipcRenderer.invoke('knowledge:v2:index-health', { bookName }),
+  rebuildKnowledgeIndex: (bookName) =>
+    ipcRenderer.invoke('knowledge:v2:rebuild-index', { bookName }),
+  resolveKnowledgeReference: (bookName, reference) =>
+    ipcRenderer.invoke('knowledge:v2:resolve-reference', { bookName, reference }),
+  // --------- 领域 Harness（跨 Turn 历史由 51mazi 本地持有）---------
+  harnessGetStatus: (payload = {}) => ipcRenderer.invoke('harness:status', payload),
+  harnessListConversations: (bookName) =>
+    ipcRenderer.invoke('harness:conversation:list', { bookName }),
+  harnessCreateConversation: (bookName, title, runtimeId, options = {}) =>
+    ipcRenderer.invoke('harness:conversation:create', { bookName, title, runtimeId, ...options }),
+  harnessReadConversation: (bookName, conversationId) =>
+    ipcRenderer.invoke('harness:conversation:read', { bookName, conversationId }),
+  harnessArchiveConversation: (bookName, conversationId) =>
+    ipcRenderer.invoke('harness:conversation:archive', { bookName, conversationId }),
+  harnessListModels: () => ipcRenderer.invoke('harness:model:list'),
+  harnessUpdateConversationSettings: (bookName, conversationId, model, effort, runtimeId) =>
+    ipcRenderer.invoke('harness:conversation:settings:update', {
+      bookName,
+      conversationId,
+      model,
+      effort,
+      runtimeId
+    }),
+  harnessStartTurn: (payload) => ipcRenderer.invoke('harness:turn:start', payload),
+  harnessCancelTurn: (bookName, conversationId) =>
+    ipcRenderer.invoke('harness:turn:cancel', { bookName, conversationId }),
+  harnessListWriteProposals: (bookName, conversationId) =>
+    ipcRenderer.invoke('harness:write-proposal:list', { bookName, conversationId }),
+  harnessRejectWriteProposal: (bookName, conversationId, proposalId) =>
+    ipcRenderer.invoke('harness:write-proposal:reject', { bookName, conversationId, proposalId }),
+  harnessApplyWriteProposal: (bookName, conversationId, proposalId) =>
+    ipcRenderer.invoke('harness:write-proposal:apply', { bookName, conversationId, proposalId }),
+  harnessUndoWriteProposal: (bookName, conversationId, proposalId) =>
+    ipcRenderer.invoke('harness:write-proposal:undo', { bookName, conversationId, proposalId }),
+  onHarnessEvent: (callback) => {
+    if (typeof callback !== 'function') return () => {}
+    const listener = (_, event) => callback(event)
+    ipcRenderer.on('harness:event', listener)
+    return () => ipcRenderer.removeListener('harness:event', listener)
+  },
+  getFunctionApiConfig: () => ipcRenderer.invoke('function-api:config:get'),
+  setFunctionApiConfig: (payload) => ipcRenderer.invoke('function-api:config:set', payload),
+  validateFunctionApiConfig: (payload) =>
+    ipcRenderer.invoke('function-api:config:validate', payload),
+  getAgentApiConfig: () => ipcRenderer.invoke('agent-api:config:get'),
+  setAgentApiConfig: (payload) => ipcRenderer.invoke('agent-api:config:set', payload),
+  validateAgentApiConfig: (payload) => ipcRenderer.invoke('agent-api:config:validate', payload),
   // 书架密码认证：通知主进程当前会话已通过认证
   setBookshelfAuthenticated: () => ipcRenderer.invoke('auth:set-bookshelf-authenticated'),
   // 书架密码认证：查询主进程当前会话是否已认证（跨窗口共享状态）
@@ -135,16 +259,10 @@ const customElectronAPI = {
   writeTimeline: (bookName, data) => ipcRenderer.invoke('write-timeline', { bookName, data }),
 
   // --------- 大纲管理相关 ---------
-  // 读取大纲数据
-  readOutlines: (bookName) => ipcRenderer.invoke('read-outlines', { bookName }),
-  // 保存大纲数据
-  writeOutlines: (bookName, data) => ipcRenderer.invoke('write-outlines', { bookName, data }),
-  // 读取 AI 大纲会话数据
-  readOutlineAiSessions: (bookName) => ipcRenderer.invoke('read-outline-ai-sessions', { bookName }),
-  // 保存 AI 大纲会话数据
-  writeOutlineAiSessions: (bookName, data) =>
-    ipcRenderer.invoke('write-outline-ai-sessions', { bookName, data }),
-
+  // 51码字助手速记（不会自动进入外部模型上下文）
+  readHarnessQuickNotes: (bookName) => ipcRenderer.invoke('harness:quick-notes:read', { bookName }),
+  writeHarnessQuickNotes: (bookName, content) =>
+    ipcRenderer.invoke('harness:quick-notes:write', { bookName, content }),
   // --------- 地图相关 ---------
   // 读取地图列表
   readMaps: (bookName) => ipcRenderer.invoke('read-maps', bookName),
@@ -163,28 +281,14 @@ const customElectronAPI = {
   loadMapData: ({ bookName, mapName }) =>
     ipcRenderer.invoke('load-map-data', { bookName, mapName }),
 
-  // --------- 人物谱相关 ---------
-  // 读取人物谱数据
+  // Markdown 人物资料：供正文高亮和关系图使用。
   readCharacters: (bookName) => ipcRenderer.invoke('read-characters', { bookName }),
-  // 保存人物谱数据
-  writeCharacters: (bookName, data) => ipcRenderer.invoke('write-characters', { bookName, data }),
-  // 读取扩展档案（坐骑、怪兽、妖兽、宝器）
-  readEntityProfiles: (bookName) => ipcRenderer.invoke('read-entity-profiles', { bookName }),
-  // 按类别写入扩展档案（会合并写入 entity_profiles.json）
-  writeEntityProfileCategory: (bookName, category, data) =>
-    ipcRenderer.invoke('write-entity-profile-category', { bookName, category, data }),
 
   // --------- 词条字典相关 ---------
   // 读取词条字典数据
   readDictionary: (bookName) => ipcRenderer.invoke('read-dictionary', { bookName }),
   // 保存词条字典数据
   writeDictionary: (bookName, data) => ipcRenderer.invoke('write-dictionary', { bookName, data }),
-
-  // --------- 设定管理相关 ---------
-  // 读取设定管理数据
-  readSettings: (bookName) => ipcRenderer.invoke('read-settings', { bookName }),
-  // 保存设定管理数据
-  writeSettings: (bookName, data) => ipcRenderer.invoke('write-settings', { bookName, data }),
 
   // --------- 事序图相关 ---------
   // 读取事序图数据
@@ -270,17 +374,6 @@ const customElectronAPI = {
   generateNamesWithAI: (options) => ipcRenderer.invoke('deepseek:generate-names', options),
   // 验证 API Key
   validateDeepSeekApiKey: () => ipcRenderer.invoke('deepseek:validate-api-key'),
-  // AI 润色段落（编辑器内使用）
-  polishTextWithAI: (text) => ipcRenderer.invoke('deepseek:polish-text', { text }),
-  // AI 完善设定（设定管理）
-  refineSettingWithAI: (payload) => ipcRenderer.invoke('deepseek:refine-setting', payload),
-  // AI 大纲工作台：完善/拆分/继续调整
-  runOutlineAiTask: (payload) => ipcRenderer.invoke('deepseek:outline-task', payload),
-  // AI 章纲 -> 章节正文
-  generateChapterFromOutline: (payload) =>
-    ipcRenderer.invoke('deepseek:generate-chapter-from-outline', payload),
-  // AI 续写（编辑器内使用）
-  continueWriteWithAI: (options) => ipcRenderer.invoke('deepseek:continue-write', options),
   // AI 场景图：节选 → 画面描述（DeepSeek）
   refineSceneVisualPromptWithAI: (text) =>
     ipcRenderer.invoke('deepseek:scene-visual-prompt', { text }),

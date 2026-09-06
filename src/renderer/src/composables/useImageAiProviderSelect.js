@@ -1,4 +1,4 @@
-import { ref, watch, computed } from 'vue'
+import { ref, watch, computed, onBeforeUnmount } from 'vue'
 import {
   listConfiguredImageProviders,
   getImageAiLastProvider,
@@ -13,12 +13,17 @@ export function useImageAiProviderSelect(modelValueRef) {
   const imageProviders = ref([])
   const selectedProvider = ref('')
   const providersLoaded = ref(false)
+  let generation = 0
+  let applyingSavedProvider = false
 
   async function refreshProviders() {
+    const request = ++generation
     const res = await listConfiguredImageProviders()
-    imageProviders.value = res?.success && Array.isArray(res.providers) ? [...res.providers] : []
     const lastRes = await getImageAiLastProvider()
+    if (request !== generation) return
+    imageProviders.value = res?.success && Array.isArray(res.providers) ? [...res.providers] : []
     const lastId = lastRes?.success ? lastRes.provider : null
+    applyingSavedProvider = true
     if (lastId && imageProviders.value.includes(lastId)) {
       selectedProvider.value = lastId
     } else if (imageProviders.value.length > 0) {
@@ -26,21 +31,46 @@ export function useImageAiProviderSelect(modelValueRef) {
     } else {
       selectedProvider.value = ''
     }
+    applyingSavedProvider = false
     providersLoaded.value = true
   }
 
   watch(
     modelValueRef,
     (open) => {
-      if (open) refreshProviders()
+      if (open)
+        void refreshProviders().catch(() => {
+          providersLoaded.value = true
+        })
     },
     { flush: 'post' }
   )
 
-  watch(selectedProvider, (p) => {
-    if (p && String(p).trim()) {
-      setImageAiLastProvider(String(p).trim()).catch(() => {})
-    }
+  watch(
+    selectedProvider,
+    (p) => {
+      if (!applyingSavedProvider && p && String(p).trim()) {
+        setImageAiLastProvider(String(p).trim()).catch(() => {})
+      }
+    },
+    { flush: 'sync' }
+  )
+
+  const removeDirectoryListener = window.electron.onApiConfigDirectoryChanged?.(() => {
+    generation += 1
+    applyingSavedProvider = true
+    selectedProvider.value = ''
+    applyingSavedProvider = false
+    imageProviders.value = []
+    providersLoaded.value = false
+    if (modelValueRef.value)
+      void refreshProviders().catch(() => {
+        providersLoaded.value = true
+      })
+  })
+  onBeforeUnmount(() => {
+    generation += 1
+    removeDirectoryListener?.()
   })
 
   const noImageProviders = computed(

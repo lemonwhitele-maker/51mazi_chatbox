@@ -42,36 +42,16 @@
         @change="handleBannedWordsHintChange"
       />
     </div>
-    <!-- 正文内容编辑区（含右上角 AI 润色按钮） -->
-    <div class="editor-content-wrap">
+    <!-- 正文内容编辑区 -->
+    <div class="editor-content-wrap" :class="{ 'reference-target-flash': referenceTargetFlash }">
       <EditorContent class="editor-content" :editor="editor" />
-      <!-- 仅章节模式显示：固定于编辑区右上角的 AI 润色下拉（段落/整章） -->
-      <div v-if="editorStore.file?.type === 'chapter'" class="ai-polish-wrap">
-        <el-dropdown trigger="click" @command="handlePolishCommand">
-          <el-button type="primary" size="small" class="ai-polish-btn" :loading="polishLoading">
-            {{ t('editorPanel.aiPolish') }}
-            <el-icon class="el-icon--right"><arrow-down /></el-icon>
-          </el-button>
-          <template #dropdown>
-            <el-dropdown-menu>
-              <el-dropdown-item command="selection">
-                {{ t('editorPanel.polishSelection') }}
-              </el-dropdown-item>
-              <el-dropdown-item command="chapter">
-                {{ t('editorPanel.polishChapter') }}
-              </el-dropdown-item>
-            </el-dropdown-menu>
-          </template>
-        </el-dropdown>
-        <el-button
-          type="success"
-          size="small"
-          class="ai-continue-btn"
-          :loading="continueLoading"
-          @click="handleContinueClick"
-        >
-          {{ t('editorPanel.aiContinue') }}
-        </el-button>
+      <AgentDiffCard
+        v-if="pendingAgentDiff"
+        :diff="pendingAgentDiff"
+        @accept="acceptAgentDiff"
+        @reject="rejectAgentDiff"
+      />
+      <div v-if="editorStore.file?.type === 'chapter'" class="ai-scene-wrap">
         <el-button
           type="warning"
           size="small"
@@ -82,110 +62,6 @@
         </el-button>
       </div>
     </div>
-    <!-- AI 润色结果确认弹框（段落 / 整章共用） -->
-    <el-dialog
-      v-model="polishDialogVisible"
-      :title="
-        polishMode === 'chapter'
-          ? t('editorPanel.aiPolishResultChapter')
-          : t('editorPanel.aiPolishResultSelection')
-      "
-      width="80%"
-      class="polish-dialog"
-      destroy-on-close
-      @close="polishDialogVisible = false"
-    >
-      <div class="polish-dialog-body">
-        <div class="polish-block">
-          <div class="polish-label">{{ t('editorPanel.originalText') }}</div>
-          <div class="polish-content original">{{ polishOriginalText }}</div>
-        </div>
-        <div class="polish-block">
-          <div class="polish-label">{{ t('editorPanel.polishedText') }}</div>
-          <div class="polish-content polished">{{ polishResultText }}</div>
-        </div>
-      </div>
-      <template #footer>
-        <span class="dialog-footer">
-          <el-button @click="polishDialogVisible = false">{{ t('common.cancel') }}</el-button>
-          <el-button @click="copyPolishedText">{{ t('editorPanel.copyOneClick') }}</el-button>
-          <el-button type="primary" @click="confirmPolishReplace">
-            {{
-              polishMode === 'chapter'
-                ? t('editorPanel.confirmReplaceChapter')
-                : t('editorPanel.confirmReplace')
-            }}
-          </el-button>
-        </span>
-      </template>
-    </el-dialog>
-
-    <!-- AI 续写：续写要求输入弹框 -->
-    <el-dialog
-      v-model="continuePromptDialogVisible"
-      :title="t('editorPanel.aiContinue')"
-      width="520px"
-      class="continue-prompt-dialog"
-      destroy-on-close
-      :close-on-click-modal="false"
-      @close="continuePromptDialogVisible = false"
-    >
-      <el-form label-width="80px" @submit.prevent="confirmContinuePrompt">
-        <el-form-item :label="t('editorPanel.continuePrompt')">
-          <el-input
-            v-model="continuePromptText"
-            type="textarea"
-            :rows="4"
-            :placeholder="t('editorPanel.continuePromptPlaceholder')"
-            maxlength="500"
-            show-word-limit
-          />
-        </el-form-item>
-        <el-form-item :label="t('editorPanel.canContinue')">
-          <span class="continue-words-tip">
-            {{ t('editorPanel.continueAllowWords', { words: continueAllowWords }) }}
-          </span>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <span class="dialog-footer">
-          <el-button :disabled="continueLoading" @click="continuePromptDialogVisible = false">
-            {{ t('common.cancel') }}
-          </el-button>
-          <el-button type="primary" :loading="continueLoading" @click="confirmContinuePrompt">
-            {{ t('common.confirm') }}
-          </el-button>
-        </span>
-      </template>
-    </el-dialog>
-
-    <!-- AI 续写：结果展示弹框 -->
-    <el-dialog
-      v-model="continueResultDialogVisible"
-      :title="t('editorPanel.aiContinueResult')"
-      width="80%"
-      class="continue-result-dialog"
-      destroy-on-close
-      @close="continueResultDialogVisible = false"
-    >
-      <div class="continue-result-body">
-        <div class="continue-block">
-          <div class="continue-label">{{ t('editorPanel.continueContent') }}</div>
-          <div class="continue-content">{{ continueResultText }}</div>
-        </div>
-      </div>
-      <template #footer>
-        <span class="dialog-footer">
-          <el-button @click="continueResultDialogVisible = false">
-            {{ t('common.cancel') }}
-          </el-button>
-          <el-button @click="copyContinueText">{{ t('editorMenubar.copy') }}</el-button>
-          <el-button type="primary" @click="confirmContinueInsert">
-            {{ t('editorPanel.confirmInsertEnd') }}
-          </el-button>
-        </span>
-      </template>
-    </el-dialog>
     <!-- 编辑器内容配置组件（隐藏，仅提供逻辑） -->
     <ChapterEditorContent
       ref="chapterEditorContentRef"
@@ -194,6 +70,7 @@
       :is-composing="isComposing"
       :get-font-family="getFontFamily"
       :auto-save-content="autoSaveContent"
+      @content-updated="handleChapterContentUpdated"
     />
     <NoteEditorContent
       ref="noteEditorContentRef"
@@ -242,7 +119,6 @@ import {
   nextTick
 } from 'vue'
 import { ElMessage } from 'element-plus'
-import { ArrowDown } from '@element-plus/icons-vue'
 import { EditorContent } from '@tiptap/vue-3'
 import { TextSelection } from 'prosemirror-state'
 import { useI18n } from 'vue-i18n'
@@ -254,6 +130,8 @@ import EditorProgress from '@renderer/components/Editor/EditorProgress.vue'
 import ChapterEditorContent from '@renderer/components/Editor/ChapterEditorContent.vue'
 import NoteEditorContent from '@renderer/components/Editor/NoteEditorContent.vue'
 import AISceneImageDialog from '@renderer/components/Editor/AISceneImageDialog.vue'
+import AgentDiffCard from '@renderer/components/Agent/AgentDiffCard.vue'
+import { editorRangeToTextRange, serializeChapterEditor } from '@renderer/service/chapterText'
 
 const editorStore = useEditorStore()
 const { t } = useI18n()
@@ -278,8 +156,6 @@ watch(
 
 // 计算属性
 const contentWordCount = computed(() => editorStore.contentWordCount)
-const MIN_CONTINUE_WORDS_WITHOUT_PREVIOUS = 200
-const PREVIOUS_CHAPTER_CONTEXT_LENGTH = 1200
 /** AI 场景图：选区有效字数（与全书统计一致，不含空白） */
 const SCENE_SELECTION_MIN_WORDS = 100
 const SCENE_SELECTION_MAX_WORDS = 1000
@@ -288,14 +164,6 @@ function getPlainTextWordCount(text) {
   if (!text) return 0
   return String(text).replace(/[\s\n\r\t]/g, '').length
 }
-
-const continueAllowWords = computed(() => {
-  const targetWords = Number(editorStore.chapterTargetWords) || 0
-  const currentWords = Number(contentWordCount.value) || 0
-  const maxTotal = Math.floor(targetWords * 1.2)
-  const allow = maxTotal - currentWords
-  return allow > 0 ? allow : 0
-})
 
 // EditorStats 组件引用
 const editorStatsRef = ref(null)
@@ -328,6 +196,10 @@ const menubarState = ref({
 })
 
 const editor = ref(null)
+const pendingAgentDiff = ref(null)
+const activeBodyWriteProposalId = ref(null)
+const referenceTargetFlash = ref(false)
+let referenceFlashTimer = 0
 let saveTimer = ref(null)
 let styleUpdateTimer = null
 let isComposing = false // 是否正在进行输入法输入（composition）
@@ -339,11 +211,274 @@ let isTitleSaving = false
 const chapterEditorContentRef = ref(null)
 const noteEditorContentRef = ref(null)
 
+function getAgentContext(mode = 'selection') {
+  const ed = editor.value
+  if (!ed) return null
+  const { from, to } = ed.state.selection
+  const file = editorStore.file || {}
+  const isChapter = file.type === 'chapter'
+  const mappedRange = isChapter ? editorRangeToTextRange(ed.state.doc, { from, to }) : null
+  const fullText = isChapter ? serializeChapterEditor(ed) : ed.getText() || ''
+  const selection = isChapter
+    ? mappedRange.originalText
+    : from === to
+      ? ''
+      : ed.state.doc.textBetween(from, to, '\n')
+
+  return {
+    mode,
+    currentModule: 'editor',
+    currentDocumentId: file.path || file.name || null,
+    currentEntityId: null,
+    selectionText: selection,
+    fullText,
+    cursorPosition: from,
+    selectionRange: { from, to },
+    editorRange: { from, to },
+    textRange: mappedRange?.textRange || null,
+    currentDocumentSavedHash: file.savedHash || file.contentHash || null,
+    hasUnsavedChanges: editorStore.hasUnsavedChanges === true,
+    metadata: {
+      chapter_id: file.path || file.name || '',
+      chapter_path: file.path || '',
+      chapter_name: file.name || editorStore.chapterTitle || '',
+      file_type: file.type || '',
+      volume_name: file.volume || file.volumeName || '',
+      book_name: props.bookName || editorStore.currentBookName || ''
+    }
+  }
+}
+
+async function highlightReferenceLines(startLine = 1, endLine = startLine) {
+  await nextTick()
+  const ed = editor.value
+  if (!ed) return false
+  const blocks = []
+  ed.state.doc.descendants((node, pos) => {
+    if (node.isTextblock) blocks.push({ from: pos + 1, to: Math.max(pos + 1, pos + node.nodeSize - 1) })
+  })
+  if (!blocks.length) return false
+  const fromBlock = blocks[Math.min(blocks.length - 1, Math.max(0, Number(startLine || 1) - 1))]
+  const toBlock = blocks[Math.min(blocks.length - 1, Math.max(0, Number(endLine || startLine || 1) - 1))]
+  const selection = TextSelection.create(ed.state.doc, fromBlock.from, toBlock.to)
+  ed.view.dispatch(ed.state.tr.setSelection(selection).scrollIntoView().setMeta('addToHistory', false))
+  ed.commands.focus()
+  referenceTargetFlash.value = false
+  window.clearTimeout(referenceFlashTimer)
+  requestAnimationFrame(() => { referenceTargetFlash.value = true })
+  referenceFlashTimer = window.setTimeout(() => { referenceTargetFlash.value = false }, 1800)
+  return true
+}
+
+function proposeAgentDiff(diff) {
+  if (!editor.value || !diff?.id || !diff?.replacementText) {
+    ElMessage.warning(t('assistantDiff.invalidDiff'))
+    return false
+  }
+  if (pendingAgentDiff.value?.id && pendingAgentDiff.value.id !== diff.id) {
+    emit('agent-diff-resolved', { id: pendingAgentDiff.value.id, status: 'rejected' })
+  }
+  pendingAgentDiff.value = {
+    id: diff.id,
+    mode: diff.mode === 'full' ? 'full' : 'selection',
+    originalText: String(diff.originalText || ''),
+    replacementText: String(diff.replacementText || ''),
+    range: diff.range || null,
+    chapterPath: String(diff.chapterPath || '')
+  }
+  if (pendingAgentDiff.value.mode === 'selection') {
+    editor.value.commands.showAgentDiffPreview?.(pendingAgentDiff.value)
+  } else {
+    editor.value.commands.clearAgentDiffPreview?.()
+  }
+  return true
+}
+
+function bodyWriteValidationError(code, message) {
+  return { ok: false, code, message }
+}
+
+function validateBodyWriteProposal(proposal) {
+  const ed = editor.value
+  const file = editorStore.file || {}
+  if (!ed || file.type !== 'chapter') {
+    return bodyWriteValidationError('WRITE_PROPOSAL_EDITOR_REQUIRED', '请先打开要修改的正文章节')
+  }
+  if (String(file.path || '') !== String(proposal?.target?.documentId || '')) {
+    return bodyWriteValidationError(
+      'WRITE_PROPOSAL_TARGET_CHANGED',
+      '请切回提案对应的章节，或基于当前章节重新生成'
+    )
+  }
+  if (editorStore.hasUnsavedChanges) {
+    return bodyWriteValidationError('WRITE_PROPOSAL_UNSAVED_CHANGES', '请先保存正文，再确认写入')
+  }
+  if (String(file.savedHash || '') !== String(proposal?.baseSavedHash || '')) {
+    return bodyWriteValidationError(
+      'WRITE_PROPOSAL_CONTENT_STALE',
+      '正文已发生变化，这条修改提案已失效'
+    )
+  }
+  if (proposal.operation === 'append_to_chapter') return { ok: true }
+
+  const range = proposal.editorRange
+  const docSize = ed.state.doc.content.size
+  if (
+    !range ||
+    !Number.isInteger(range.from) ||
+    !Number.isInteger(range.to) ||
+    range.from < 0 ||
+    range.to > docSize ||
+    range.from >= range.to
+  ) {
+    return bodyWriteValidationError(
+      'WRITE_PROPOSAL_CONTENT_STALE',
+      '提案的编辑器范围已失效，请重新生成'
+    )
+  }
+  const mapped = editorRangeToTextRange(ed.state.doc, range)
+  if (
+    mapped.originalText !== proposal.originalText ||
+    mapped.textRange.start !== proposal.textRange?.start ||
+    mapped.textRange.end !== proposal.textRange?.end ||
+    serializeChapterEditor(ed).slice(proposal.textRange.start, proposal.textRange.end) !==
+      proposal.originalText
+  ) {
+    return bodyWriteValidationError(
+      'WRITE_PROPOSAL_CONTENT_STALE',
+      '正文已发生变化，这条修改提案已失效'
+    )
+  }
+  return { ok: true }
+}
+
+function previewBodyWriteProposal(proposal) {
+  if (proposal?.status !== 'pending') return false
+  const check = validateBodyWriteProposal(proposal)
+  if (!check.ok) return false
+  activeBodyWriteProposalId.value = proposal.proposalId
+  editor.value.commands.showAgentDiffPreview?.({
+    id: proposal.proposalId,
+    operation: proposal.operation,
+    range: proposal.editorRange,
+    replacementText: proposal.proposedText
+  })
+  return true
+}
+
+function clearBodyWriteProposalPreview(proposalId = null) {
+  if (
+    proposalId &&
+    activeBodyWriteProposalId.value &&
+    proposalId !== activeBodyWriteProposalId.value
+  )
+    return
+  editor.value?.commands.clearAgentDiffPreview?.()
+  activeBodyWriteProposalId.value = null
+}
+
+function handleChapterContentUpdated() {
+  if (activeBodyWriteProposalId.value) clearBodyWriteProposalPreview()
+}
+
+async function applyBodyWriteProposalResult({ proposal, result } = {}) {
+  clearBodyWriteProposalPreview(proposal?.proposalId)
+  if (
+    !editor.value ||
+    editorStore.file?.type !== 'chapter' ||
+    String(editorStore.file?.path || '') !== String(proposal?.target?.documentId || '') ||
+    typeof result?.content !== 'string'
+  )
+    return false
+
+  chapterEditorContentRef.value?.setChapterContent(editor.value, result.content)
+  editorStore.setContent(result.content, { isInitialLoad: true })
+  if (result.contentHash) editorStore.updateFileSavedHash(result.contentHash)
+  editorStore.markSaved()
+  emit('refresh-chapters')
+  if (editorStatsRef.value) await editorStatsRef.value.loadBookTotalWords(true)
+  ElMessage.success(proposal.status === 'undone' ? '正文已撤销并保存' : '正文已写入并保存')
+  return true
+}
+
+function resolveAgentDiff(status) {
+  const id = pendingAgentDiff.value?.id
+  editor.value?.commands.clearAgentDiffPreview?.()
+  pendingAgentDiff.value = null
+  if (id) emit('agent-diff-resolved', { id, status })
+}
+
+function plainTextToEditorHtml(text) {
+  if (!text || !text.trim()) return '<p></p>'
+  const escape = (value) =>
+    String(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+  const paragraphs = text.trim().split(/\n\n+/)
+  return (
+    paragraphs
+      .map((paragraph) => `<p>${escape(paragraph.trim()).replace(/\n/g, '<br>')}</p>`)
+      .join('') || '<p></p>'
+  )
+}
+
+function acceptAgentDiff() {
+  const ed = editor.value
+  const diff = pendingAgentDiff.value
+  if (!ed || !diff) return
+
+  const currentPath = String(editorStore.file?.path || '')
+  if (diff.chapterPath && currentPath && diff.chapterPath !== currentPath) {
+    ElMessage.warning(t('assistantDiff.diffChapterChanged'))
+    resolveAgentDiff('stale')
+    return
+  }
+
+  if (diff.mode === 'full') {
+    if (ed.getText() !== diff.originalText) {
+      ElMessage.warning(t('assistantDiff.diffContentChanged'))
+      resolveAgentDiff('stale')
+      return
+    }
+    ed.chain().focus().setContent(plainTextToEditorHtml(diff.replacementText)).run()
+  } else {
+    const from = Number(diff.range?.from)
+    const to = Number(diff.range?.to)
+    const docSize = ed.state.doc.content.size
+    if (!Number.isFinite(from) || !Number.isFinite(to) || from < 0 || to > docSize || from >= to) {
+      ElMessage.warning(t('assistantDiff.diffContentChanged'))
+      resolveAgentDiff('stale')
+      return
+    }
+    const currentText = ed.state.doc.textBetween(from, to, '\n')
+    if (currentText !== diff.originalText) {
+      ElMessage.warning(t('assistantDiff.diffContentChanged'))
+      resolveAgentDiff('stale')
+      return
+    }
+    ed.chain().focus().insertContentAt({ from, to }, diff.replacementText).run()
+  }
+
+  ElMessage.success(t('assistantDiff.diffApplied'))
+  resolveAgentDiff('accepted')
+  void autoSaveContent()
+}
+
+function rejectAgentDiff() {
+  if (!pendingAgentDiff.value) return
+  resolveAgentDiff('rejected')
+  ElMessage.info(t('assistantDiff.diffDismissed'))
+}
+
 // 人物高亮相关状态
 const characterHighlightEnabled = ref(false) // 人物高亮开关状态，默认关闭
 const characters = ref([]) // 人物数据列表
 let characterHighlightTimer = null // 人物高亮定时器
 const defaultHighlightColor = '#ffeb3b' // 默认高亮颜色（黄色）
+const KNOWLEDGE_DOCUMENTS_CHANGED_EVENT = 'knowledge-documents-changed'
+const editorPanelActive = ref(false)
 
 /**
  * 将人物高亮颜色变淡，避免过于刺眼
@@ -384,22 +519,6 @@ async function handleTitleBlur() {
 
 // 搜索面板状态
 const searchPanelVisible = ref(false)
-
-// AI 润色：加载中、弹框可见、原文/润色结果；mode 为 selection | chapter，选中时记录替换范围
-const polishLoading = ref(false)
-const polishDialogVisible = ref(false)
-const polishMode = ref('chapter') // 'selection' | 'chapter'
-const polishOriginalText = ref('')
-const polishResultText = ref('')
-
-// AI 续写相关状态
-const continueLoading = ref(false)
-const continuePromptDialogVisible = ref(false)
-const continuePromptText = ref('')
-const continueResultDialogVisible = ref(false)
-const continueResultText = ref('')
-const polishReplaceFrom = ref(0)
-const polishReplaceTo = ref(0)
 
 // AI 场景图（选中文本）
 const sceneDialogVisible = ref(false)
@@ -815,6 +934,7 @@ function setupCompositionHandlers() {
 }
 
 onMounted(async () => {
+  window.addEventListener(KNOWLEDGE_DOCUMENTS_CHANGED_EVENT, handleKnowledgeDocumentsChanged)
   // 书籍总字数由 EditorStats 组件通过 watch fileType 自动加载
   // registerExternalSaveHandler / keydown 在 onActivated 中注册，避免 keep-alive 停用后仍响应快捷键
 
@@ -849,13 +969,17 @@ onMounted(async () => {
 })
 
 onActivated(async () => {
+  editorPanelActive.value = true
   editorStore.registerExternalSaveHandler(saveFile)
   document.addEventListener('keydown', handleKeydown)
+  if (characterHighlightEnabled.value) await loadCharacters()
   await nextTick()
+  if (characterHighlightEnabled.value) applyCharacterHighlights()
   resumeChapterDecorationTimers()
 })
 
 onDeactivated(async () => {
+  editorPanelActive.value = false
   editorStore.registerExternalSaveHandler(null)
   document.removeEventListener('keydown', handleKeydown)
 
@@ -878,9 +1002,12 @@ onDeactivated(async () => {
 })
 
 onBeforeUnmount(async () => {
+  window.clearTimeout(referenceFlashTimer)
+  editorPanelActive.value = false
   editorStore.registerExternalSaveHandler(null)
   // 移除窗口关闭监听器
   window.removeEventListener('beforeunload', handleWindowClose)
+  window.removeEventListener(KNOWLEDGE_DOCUMENTS_CHANGED_EVENT, handleKnowledgeDocumentsChanged)
 
   // 移除输入法事件监听器
   if (editor.value && editor.value.view && editor.value.view.dom) {
@@ -980,7 +1107,8 @@ async function saveFile(showMessage = false) {
     result = await window.electron.saveChapter({
       ...saveParams,
       volumeName: file.volume,
-      chapterName: file.name
+      chapterName: file.name,
+      expectedHash: file.savedHash || ''
     })
     if (showMessage && result.success) {
       emit('refresh-chapters')
@@ -992,8 +1120,16 @@ async function saveFile(showMessage = false) {
   }
 
   if (result?.success) {
+    editorStore.markSaved()
+    if (file.type === 'chapter' && result.contentHash) {
+      editorStore.updateFileSavedHash(result.contentHash)
+    }
     if (result.name && result.name !== file.name) {
-      editorStore.setFile({ ...file, name: result.name })
+      editorStore.setFile({
+        ...file,
+        name: result.name,
+        savedHash: result.contentHash || file.savedHash || null
+      })
       if (file.type === 'note') {
         emit('refresh-notes')
       } else if (file.type === 'chapter') {
@@ -1050,265 +1186,6 @@ watch(searchPanelVisible, (visible) => {
   }
 })
 
-/**
- * 将润色后的纯文本转为编辑器 HTML（按双换行分段为 <p>，段内 \n 转 <br>）
- * @param {string} text - 纯文本
- * @returns {string} HTML
- */
-function plainTextToEditorHtml(text) {
-  if (!text || !text.trim()) return '<p></p>'
-  const escape = (s) =>
-    String(s)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-  const paragraphs = text.trim().split(/\n\n+/)
-  return (
-    paragraphs.map((p) => '<p>' + escape(p.trim()).replace(/\n/g, '<br>') + '</p>').join('') ||
-    '<p></p>'
-  )
-}
-
-function normalizeAppendText(appendText) {
-  const cleaned = String(appendText || '').trim()
-  if (!cleaned) return ''
-  // 插入到章节末尾时，尽量从新段落开始
-  return `\n\n${cleaned}`
-}
-
-async function getPreviousChapterContextInfo() {
-  const currentFile = editorStore.file
-  if (!props.bookName || !currentFile || currentFile.type !== 'chapter') {
-    return { hasPrevious: false, contextText: '' }
-  }
-  if (!window.electron?.loadChapters || !window.electron?.readChapter) {
-    return { hasPrevious: false, contextText: '' }
-  }
-
-  try {
-    const chaptersTree = await window.electron.loadChapters(props.bookName)
-    if (!Array.isArray(chaptersTree) || chaptersTree.length === 0) {
-      return { hasPrevious: false, contextText: '' }
-    }
-
-    const flatChapters = []
-    chaptersTree.forEach((volume) => {
-      if (!volume || volume.type !== 'volume' || !Array.isArray(volume.children)) return
-      volume.children.forEach((chapter) => {
-        if (!chapter || chapter.type !== 'chapter') return
-        flatChapters.push({
-          name: chapter.name,
-          path: chapter.path,
-          volumeName: volume.name
-        })
-      })
-    })
-
-    if (flatChapters.length === 0) {
-      return { hasPrevious: false, contextText: '' }
-    }
-
-    const currentIndex = flatChapters.findIndex(
-      (chapter) =>
-        chapter.path === currentFile.path ||
-        (chapter.name === currentFile.name && chapter.volumeName === currentFile.volume)
-    )
-    if (currentIndex <= 0) {
-      return { hasPrevious: false, contextText: '' }
-    }
-
-    const previousChapter = flatChapters[currentIndex - 1]
-    const readRes = await window.electron.readChapter(
-      props.bookName,
-      previousChapter.volumeName,
-      previousChapter.name
-    )
-    if (!readRes?.success || !readRes.content) {
-      return { hasPrevious: true, contextText: '' }
-    }
-
-    const previousText = String(readRes.content).trim()
-    if (!previousText) {
-      return { hasPrevious: true, contextText: '' }
-    }
-
-    const tailContext = previousText.slice(-PREVIOUS_CHAPTER_CONTEXT_LENGTH)
-    return { hasPrevious: true, contextText: tailContext }
-  } catch (error) {
-    console.error('获取上一章上下文失败:', error)
-    return { hasPrevious: false, contextText: '' }
-  }
-}
-
-/** 下拉选择：润色选中文本 / 润色整章 */
-function handlePolishCommand(command) {
-  if (command === 'selection') {
-    handlePolishSelection()
-  } else if (command === 'chapter') {
-    handlePolishChapter()
-  }
-}
-
-function handleContinueClick() {
-  const targetWords = Number(editorStore.chapterTargetWords) || 0
-  const currentWords = Number(contentWordCount.value) || 0
-  if (targetWords > 0 && currentWords >= targetWords) {
-    ElMessage.warning(t('editorPanel.chapterReachedTarget'))
-    return
-  }
-  if (continueAllowWords.value <= 0) {
-    ElMessage.warning(t('editorPanel.continueWordsNotEnough'))
-    return
-  }
-  continuePromptText.value = ''
-  continuePromptDialogVisible.value = true
-}
-
-async function confirmContinuePrompt() {
-  const ed = editor.value
-  if (!ed) {
-    ElMessage.warning(t('editorPanel.editorNotReady'))
-    return
-  }
-  const fullText = ed.getText() || ''
-  const currentWords = getPlainTextWordCount(fullText)
-  if (!window.electron?.continueWriteWithAI) {
-    ElMessage.error(t('editorPanel.aiContinueUnsupported'))
-    return
-  }
-
-  const previousInfo = await getPreviousChapterContextInfo()
-  if (!previousInfo.hasPrevious && currentWords < MIN_CONTINUE_WORDS_WITHOUT_PREVIOUS) {
-    ElMessage.warning(
-      t('editorPanel.noContinuableContent', { min: MIN_CONTINUE_WORDS_WITHOUT_PREVIOUS })
-    )
-    return
-  }
-
-  let sourceText = fullText.trim()
-  if (!sourceText) {
-    if (previousInfo.contextText) {
-      sourceText = previousInfo.contextText
-      ElMessage.info(t('editorPanel.chapterEmptyUsePrevious'))
-    } else {
-      ElMessage.warning(
-        t('editorPanel.noContinuableContent', { min: MIN_CONTINUE_WORDS_WITHOUT_PREVIOUS })
-      )
-      return
-    }
-  }
-
-  const maxAddWords = continueAllowWords.value
-  if (!maxAddWords || maxAddWords <= 0) {
-    ElMessage.warning(t('editorPanel.continueWordsNotEnough'))
-    return
-  }
-  continueLoading.value = true
-  try {
-    const res = await window.electron.continueWriteWithAI({
-      text: sourceText,
-      prompt: continuePromptText.value,
-      maxAddWords
-    })
-    if (!res?.success) {
-      ElMessage.error(res?.message || t('editorPanel.continueFailed'))
-      return
-    }
-    const content = (res.content || '').trim()
-    if (!content) {
-      ElMessage.error(t('editorPanel.continueEmpty'))
-      return
-    }
-    // 兜底：若 AI 返回过长，仍展示结果；后续插入时会导致超限，但主约束已通过 maxAddWords 尽量控制
-    continueResultText.value = content
-    continuePromptDialogVisible.value = false
-    continueResultDialogVisible.value = true
-  } catch (e) {
-    ElMessage.error(e?.message || t('editorPanel.continueRequestError'))
-  } finally {
-    continueLoading.value = false
-  }
-}
-
-async function copyContinueText() {
-  if (!continueResultText.value) return
-  try {
-    await navigator.clipboard.writeText(continueResultText.value)
-    ElMessage.success(t('editorPanel.copiedToClipboard'))
-  } catch {
-    ElMessage.error(t('editorPanel.copyFailed'))
-  }
-}
-
-function confirmContinueInsert() {
-  const ed = editor.value
-  const text = continueResultText.value
-  if (!ed || !text) return
-
-  const appendText = normalizeAppendText(text)
-  if (!appendText) return
-
-  // 追加到章节末尾：先聚焦到末尾，再插入纯文本（TipTap 会按换行分段）
-  ed.chain().focus('end').insertContent(appendText).run()
-
-  // 额外安全：若插入后已超过 120% 上限，这里不拦截（按需求“前置控制字数”）
-  const targetWords = Number(editorStore.chapterTargetWords) || 0
-  const maxTotal = Math.floor(targetWords * 1.2)
-  const afterText = ed.getText()
-  const afterWords = getPlainTextWordCount(afterText)
-  if (maxTotal > 0 && afterWords > maxTotal) {
-    ElMessage.warning(t('editorPanel.insertedButOverLimit', { max: maxTotal }))
-  } else {
-    ElMessage.success(t('editorPanel.insertedContinueContent'))
-  }
-
-  continueResultDialogVisible.value = false
-  continueResultText.value = ''
-}
-
-/** 润色选中文本：根据当前选区获取范围与文本 */
-async function handlePolishSelection() {
-  const ed = editor.value
-  if (!ed) {
-    ElMessage.warning(t('editorPanel.editorNotReady'))
-    return
-  }
-  const { state } = ed
-  const { from, to } = state.selection
-  if (from === to) {
-    ElMessage.warning(t('editorPanel.selectTextToPolish'))
-    return
-  }
-  const text = state.doc.textBetween(from, to, '\n')
-  if (!text.trim()) {
-    ElMessage.warning(t('editorPanel.selectedTextEmpty'))
-    return
-  }
-  if (!window.electron?.polishTextWithAI) {
-    ElMessage.error(t('editorPanel.aiPolishUnsupported'))
-    return
-  }
-  polishLoading.value = true
-  try {
-    const res = await window.electron.polishTextWithAI(text)
-    if (!res.success) {
-      ElMessage.error(res.message || t('editorPanel.polishFailed'))
-      return
-    }
-    polishMode.value = 'selection'
-    polishOriginalText.value = text
-    polishResultText.value = res.content || ''
-    polishReplaceFrom.value = from
-    polishReplaceTo.value = to
-    polishDialogVisible.value = true
-  } catch (e) {
-    ElMessage.error(e?.message || t('editorPanel.polishRequestError'))
-  } finally {
-    polishLoading.value = false
-  }
-}
-
 /** AI 场景图：校验选区字数后打开场景图抽屉（图像服务在抽屉内选择） */
 function handleAISceneImageClick() {
   const ed = editor.value
@@ -1349,74 +1226,6 @@ function handleAISceneImageClick() {
   sceneDialogVisible.value = true
 }
 
-/** 润色整章 */
-async function handlePolishChapter() {
-  const ed = editor.value
-  if (!ed) {
-    ElMessage.warning(t('editorPanel.editorNotReady'))
-    return
-  }
-  const fullText = ed.getText()
-  if (!fullText || !fullText.trim()) {
-    ElMessage.warning(t('editorPanel.chapterContentEmptyCannotPolish'))
-    return
-  }
-  if (!window.electron?.polishTextWithAI) {
-    ElMessage.error(t('editorPanel.aiPolishUnsupported'))
-    return
-  }
-  polishLoading.value = true
-  try {
-    const res = await window.electron.polishTextWithAI(fullText)
-    if (!res.success) {
-      ElMessage.error(res.message || t('editorPanel.polishFailed'))
-      return
-    }
-    polishMode.value = 'chapter'
-    polishOriginalText.value = fullText
-    polishResultText.value = res.content || ''
-    polishDialogVisible.value = true
-  } catch (e) {
-    ElMessage.error(e?.message || t('editorPanel.polishRequestError'))
-  } finally {
-    polishLoading.value = false
-  }
-}
-
-/** 一键复制：将润色后的文本复制到剪贴板 */
-async function copyPolishedText() {
-  if (!polishResultText.value) return
-  try {
-    await navigator.clipboard.writeText(polishResultText.value)
-    ElMessage.success(t('editorPanel.copiedToClipboard'))
-  } catch {
-    ElMessage.error(t('editorPanel.copyFailed'))
-  }
-}
-
-/** 确认替换：根据 polishMode 替换选中文本或整章 */
-function confirmPolishReplace() {
-  const ed = editor.value
-  if (!ed || !polishResultText.value) return
-  if (polishMode.value === 'selection') {
-    ed.chain()
-      .focus()
-      .insertContentAt(
-        { from: polishReplaceFrom.value, to: polishReplaceTo.value },
-        polishResultText.value
-      )
-      .run()
-    ElMessage.success(t('editorPanel.replacedWithPolishedText'))
-  } else {
-    const html = plainTextToEditorHtml(polishResultText.value)
-    ed.chain().focus().setContent(html).run()
-    ElMessage.success(t('editorPanel.replacedWholeChapterWithPolish'))
-  }
-  polishDialogVisible.value = false
-  polishOriginalText.value = ''
-  polishResultText.value = ''
-}
-
 // 自动保存内容
 async function autoSaveContent() {
   await saveFile(false)
@@ -1431,6 +1240,21 @@ async function loadCharacters() {
   } catch (error) {
     console.error('加载人物数据失败:', error)
     characters.value = []
+  }
+}
+
+async function handleKnowledgeDocumentsChanged(event) {
+  const detail = event?.detail || {}
+  if (detail.scope !== 'characters' || detail.bookName !== props.bookName) return
+  await loadCharacters()
+  if (
+    editorPanelActive.value &&
+    characterHighlightEnabled.value &&
+    editorStore.file?.type === 'chapter' &&
+    !searchPanelVisible.value
+  ) {
+    await nextTick()
+    applyCharacterHighlights()
   }
 }
 
@@ -1929,12 +1753,23 @@ function resumeChapterDecorationTimers() {
   }
 }
 
-const emit = defineEmits(['refresh-notes', 'refresh-chapters'])
+const emit = defineEmits(['refresh-notes', 'refresh-chapters', 'agent-diff-resolved'])
+
+defineExpose({
+  getAgentContext,
+  proposeAgentDiff,
+  validateBodyWriteProposal,
+  previewBodyWriteProposal,
+  clearBodyWriteProposalPreview,
+  applyBodyWriteProposalResult,
+  highlightReferenceLines
+})
 
 // 监听当前文件类型，动态设置首行缩进和编辑器模式
 watch(
   () => editorStore.file,
   async (file) => {
+    clearBodyWriteProposalPreview()
     if (editor.value) {
       const isChapter = file?.type === 'chapter'
       const style = document.querySelector('.tiptap')
@@ -1979,7 +1814,7 @@ watch(
   flex-shrink: 0;
 }
 
-/* 编辑区包裹层：用于固定右上角 AI 润色按钮 */
+/* 编辑区包裹层 */
 .editor-content-wrap {
   position: relative;
   flex: 1;
@@ -1998,45 +1833,41 @@ watch(
   font-family: inherit, monospace;
 }
 
-/* 编辑区右上角固定容器，保证按钮始终在编辑区右上角 */
-.ai-polish-wrap {
+:deep(.agent-selection-highlight) {
+  background: rgba(64, 158, 255, 0.2);
+  box-shadow: inset 0 -2px 0 rgba(64, 158, 255, 0.65);
+  border-radius: 2px;
+}
+.editor-content-wrap.reference-target-flash { animation: reference-editor-pulse 1.8s ease; }
+@keyframes reference-editor-pulse { 0%, 100% { box-shadow: none; } 18%, 62% { box-shadow: inset 0 0 0 3px color-mix(in srgb, var(--el-color-primary) 58%, transparent), 0 0 18px color-mix(in srgb, var(--el-color-primary) 22%, transparent); } }
+
+:deep(.agent-diff-preview-original) {
+  color: var(--el-color-danger);
+  background: rgba(245, 108, 108, 0.16);
+  text-decoration: line-through;
+  text-decoration-thickness: 2px;
+}
+
+:deep(.agent-diff-preview-inserted) {
+  display: inline-block;
+  max-width: min(100%, 680px);
+  margin: 3px 2px;
+  padding: 3px 6px;
+  border: 1px solid rgba(103, 194, 58, 0.45);
+  border-radius: 5px;
+  color: var(--el-color-success);
+  background: rgba(103, 194, 58, 0.12);
+  white-space: pre-wrap;
+  text-decoration: none;
+}
+
+/* 编辑区右上角固定场景图入口 */
+.ai-scene-wrap {
   position: absolute;
   top: 12px;
   right: 12px;
   z-index: 10;
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 8px;
-}
-
-/* AI 润色按钮：默认半透明，悬停不透明 */
-.ai-polish-btn {
-  min-width: 100px;
-  max-width: 132px;
-  height: auto;
-  justify-content: center;
-  white-space: normal;
-  line-height: 1.2;
-  opacity: 0.45;
-  transition: opacity 0.2s ease;
-  &:hover {
-    opacity: 1;
-  }
-}
-
-.ai-continue-btn {
-  min-width: 100px;
-  max-width: 132px;
-  height: auto;
-  justify-content: center;
-  white-space: normal;
-  line-height: 1.2;
-  opacity: 0.45;
-  transition: opacity 0.2s ease;
-  &:hover {
-    opacity: 1;
-  }
 }
 
 .ai-scene-btn {
@@ -2050,74 +1881,6 @@ watch(
   transition: opacity 0.2s ease;
   &:hover {
     opacity: 1;
-  }
-}
-.continue-words-tip {
-  color: var(--el-text-color-regular);
-  font-size: 12px;
-}
-
-.continue-result-body {
-  min-height: 320px;
-}
-.continue-block {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.continue-label {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-}
-.continue-content {
-  min-height: 320px;
-  padding: 10px 12px;
-  border-radius: 6px;
-  font-size: 14px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-word;
-  overflow-y: auto;
-  background: var(--el-color-success-light-9);
-  color: var(--el-text-color-primary);
-}
-
-/* AI 润色结果弹框：左右布局 */
-.polish-dialog-body {
-  display: flex;
-  flex-direction: row;
-  gap: 16px;
-  min-height: 320px;
-}
-.polish-block {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.polish-label {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-  flex-shrink: 0;
-}
-.polish-content {
-  flex: 1;
-  min-height: 0;
-  padding: 10px 12px;
-  border-radius: 6px;
-  font-size: 14px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-word;
-  overflow-y: auto;
-  &.original {
-    background: var(--el-fill-color-light);
-    color: var(--el-text-color-regular);
-  }
-  &.polished {
-    background: var(--el-color-primary-light-9);
-    color: var(--el-text-color-primary);
   }
 }
 

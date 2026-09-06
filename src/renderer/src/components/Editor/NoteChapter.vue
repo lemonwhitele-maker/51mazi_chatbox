@@ -564,7 +564,8 @@ async function handleChapterClick(data, node) {
         name: data.name,
         type: 'chapter',
         path: data.path,
-        volume: node.parent.data.name
+        volume: node.parent.data.name,
+        savedHash: res.contentHash || null
       })
       // 确保内容至少是空字符串，即使文件为空或返回 undefined
       const content = res.content || ''
@@ -1099,7 +1100,12 @@ onMounted(async () => {
 
 defineExpose({
   reloadNotes,
-  reloadChapters: (autoSelectLatest = false) => loadChapters(autoSelectLatest)
+  reloadChapters: (autoSelectLatest = false) => loadChapters(autoSelectLatest),
+  openChapterReference: (volumeId, chapterName) => loadChapters({
+    forceExpandVolumeId: volumeId,
+    selectChapter: { volumeId, chapterName },
+    autoSelectLatest: false
+  })
 })
 
 async function reloadNotes() {

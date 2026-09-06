@@ -12,10 +12,14 @@ files:
   - '!electron.vite.config.{js,ts,mjs,cjs}'
   - '!{.eslintignore,.eslintrc.cjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
+  - '!**/.51mazi/api-config*'
   - '!**/.venv/**'
   - '!**/venv/**'
 asarUnpack:
   - resources/**
+  # Codex App Server 包含需要直接 spawn 的平台原生二进制。
+  - node_modules/@openai/codex/**
+  - node_modules/@openai/codex-*/**
 win:
   icon: build/icon.ico
   executableName: 51mazi

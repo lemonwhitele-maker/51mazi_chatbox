@@ -88,7 +88,7 @@ function checkGitStatus() {
       console.error(status)
       process.exit(1)
     }
-  } catch (error) {
+  } catch {
     console.error('❌ 错误: 无法检查 git 状态')
     process.exit(1)
   }
@@ -100,7 +100,7 @@ function checkBranch() {
     const branch = execSync('git branch --show-current', { encoding: 'utf-8', cwd: rootDir }).trim()
     console.log(`📌 当前分支: ${branch}`)
     return branch
-  } catch (error) {
+  } catch {
     console.error('❌ 错误: 无法获取当前分支')
     process.exit(1)
   }
@@ -171,7 +171,7 @@ function main() {
       stdio: 'inherit'
     })
     console.log('✅ 更改已提交\n')
-  } catch (error) {
+  } catch {
     console.error('❌ 错误: 提交失败')
     process.exit(1)
   }
@@ -185,7 +185,7 @@ function main() {
       stdio: 'inherit'
     })
     console.log(`✅ Tag ${tagName} 已创建\n`)
-  } catch (error) {
+  } catch {
     console.error(`❌ 错误: 创建 tag 失败`)
     process.exit(1)
   }
@@ -202,7 +202,7 @@ function main() {
       stdio: 'inherit'
     })
     console.log('✅ 已推送到远程仓库\n')
-  } catch (error) {
+  } catch {
     console.error('❌ 错误: 推送失败')
     process.exit(1)
   }

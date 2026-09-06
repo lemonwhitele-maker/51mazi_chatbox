@@ -156,8 +156,10 @@ const guideData = {
       {
         title: '3. 使用写作助手',
         paragraphs: [
-          '进入书籍后，可通过右侧「写作助手」快速进入地图、人物谱、关系图、时间线、词典、禁词等工具。'
-        ]
+          '进入书籍后，右侧「写作助手」可以读取当前书籍资料并讨论写作问题。',
+          '在已保存的正文章节中选中文字并要求改写，助手会生成修改提案卡片；确认前正文不会变化，必须点击卡片中的「确认写入」才会保存。'
+        ],
+        tip: '提案生成后若正文或目标章节发生变化，旧提案会被拒绝；写入后可在卡片中安全撤销。'
       }
     ],
     core: [
@@ -189,20 +191,26 @@ const guideData = {
     ],
     ai: [
       {
+        title: '✍️ 正文修改提案',
+        paragraphs: [
+          '支持替换选区、在选区前后插入和追加到章节末尾。对话卡片提供原文/新文预览、复制、取消、确认与撤销。'
+        ],
+        entry: '打开并保存正文章节 → 选中文字 → 在右侧写作助手中提出修改要求',
+        tip: '助手不能直接写正文；自然语言中的“好的”也不会代替卡片确认。'
+      },
+      {
         title: '⚙️ AI 设置',
         listType: 'ul',
         items: [
-          'DeepSeek：起名、润色、续写、场景图提炼',
+          'DeepSeek：起名、大纲与设定辅助、场景图提炼',
           '图像 AI：通义万相、Gemini Imagen、豆包（火山方舟），用于封面 / 人物图 / 场景图',
           '支持一键验证 API Key'
         ],
         entry: '首页左侧菜单「AI 设置」'
       },
       {
-        title: '✍️ AI 润色 / 续写 / 场景图',
-        paragraphs: [
-          '章节页右上角可直接使用 AI 工具，对选中文本润色、按上下文续写，或生成场景图。'
-        ],
+        title: '🖼️ AI 场景图',
+        paragraphs: ['章节页右上角可根据选中的正文片段生成场景图。'],
         tip: '使用前请先验证 API Key 与网络可用性。'
       },
       {
@@ -318,8 +326,10 @@ const guideData = {
       {
         title: '3. Use Writing Assistant',
         paragraphs: [
-          'Open map, character profile, relationship graph, timeline, dictionary and other tools from the right panel.'
-        ]
+          'Use the right-side Writing Assistant to read current book material and discuss writing.',
+          'Select text in a saved chapter and request a rewrite to receive a proposal card. Nothing changes until you click Confirm Write on the card.'
+        ],
+        tip: 'A proposal is rejected if its chapter or saved content changes. A successful write can be safely undone from the card.'
       }
     ],
     core: [
@@ -351,20 +361,26 @@ const guideData = {
     ],
     ai: [
       {
+        title: '✍️ Chapter Edit Proposals',
+        paragraphs: [
+          'Supports replacing a selection, inserting before or after it, and appending to the chapter. Cards provide preview, copy, cancel, confirm, and undo actions.'
+        ],
+        entry: 'Open and save a chapter → select text → request an edit in Writing Assistant',
+        tip: 'The assistant cannot write directly; a natural-language approval does not replace the card confirmation.'
+      },
+      {
         title: '⚙️ AI Settings',
         listType: 'ul',
         items: [
-          'DeepSeek: naming, polishing, continuation, scene prompt refinement',
+          'DeepSeek: naming, outline and setting assistance, scene prompt refinement',
           'Image AI: Tongyi Wanxiang, Gemini Imagen, or Doubao (Volcano Ark) for cover / character / scene images',
           'One-click API key verification'
         ],
         entry: 'Home sidebar → AI Settings'
       },
       {
-        title: '✍️ AI Polish / Continue / Scene Image',
-        paragraphs: [
-          'Use AI tools in chapter editor to polish selected text, continue writing, or generate scene references.'
-        ],
+        title: '🖼️ AI Scene Image',
+        paragraphs: ['Generate a scene image from selected chapter text.'],
         tip: 'Verify API keys and network availability first.'
       },
       {
@@ -397,7 +413,7 @@ const guideData = {
         items: [
           'Build settings first (characters, relations, map, timeline)',
           'Write by chapters with real-time metrics',
-          'Use AI tools for key paragraph polishing',
+          'Use search and structured notes to review key paragraphs',
           'Review regularly with search & replace'
         ]
       },

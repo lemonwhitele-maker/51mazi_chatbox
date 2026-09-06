@@ -6,6 +6,9 @@ import TextAlign from '@tiptap/extension-text-align'
 import Highlight from '@tiptap/extension-highlight'
 import { createDocument, Extension } from '@tiptap/core'
 import { Collapsible } from '@renderer/extensions/Collapsible'
+import { AgentDiffPreview } from '@renderer/extensions/AgentDiffPreview'
+import { AgentSelectionHighlight } from '@renderer/extensions/AgentSelectionHighlight'
+import { serializeChapterEditor } from '@renderer/service/chapterText'
 
 const props = defineProps({
   editorStore: {
@@ -82,6 +85,8 @@ function getChapterExtensions() {
       }
     }),
     TabInsert,
+    AgentSelectionHighlight,
+    AgentDiffPreview,
     Collapsible // Collapsible 扩展只在章节模式下使用
   ]
 }
@@ -104,7 +109,7 @@ function createEditor() {
     },
     onUpdate: ({ editor }) => {
       // 章节模式：保存纯文本格式
-      const content = editor.getText()
+      const content = serializeChapterEditor(editor)
 
       // 如果正在进行输入法输入（composition），不更新字数统计
       if (!props.isComposing) {
@@ -146,8 +151,7 @@ function setChapterContent(editor, content) {
 
 // 获取章节编辑器保存内容
 function getSaveContent(editor) {
-  if (!editor) return ''
-  return editor.getText()
+  return serializeChapterEditor(editor)
 }
 
 // 暴露方法给父组件

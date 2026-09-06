@@ -124,7 +124,7 @@ async function loadCoverImage() {
       try {
         const date = new Date(props.updatedAt)
         if (!isNaN(date.getTime())) timestamp = date.getTime()
-      } catch (e) {
+      } catch {
         // 解析失败则用当前时间戳
       }
     }

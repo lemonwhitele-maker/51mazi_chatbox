@@ -14,52 +14,68 @@ const routes = [
   {
     path: '/editor',
     name: 'Editor',
-    component: () => import('@renderer/views/Editor.vue')
+    component: () => import('@renderer/views/Editor.vue'),
+    meta: { bookWorkspace: true }
   },
   {
     path: '/timeline',
     name: 'Timeline',
-    component: () => import('@renderer/views/Timeline.vue')
+    component: () => import('@renderer/views/Timeline.vue'),
+    meta: { bookWorkspace: true }
   },
   {
     path: '/character-profile',
     name: 'CharacterProfile',
-    component: () => import('@renderer/views/CharacterProfile.vue')
+    component: () => import('@renderer/views/CharacterHtmlWorkspace.vue'),
+    meta: { bookWorkspace: true, workspaceModule: 'characters-knowledge-v2' }
   },
   {
     path: '/dictionary',
     name: 'Dictionary',
-    component: () => import('@renderer/views/Dictionary.vue')
+    component: () => import('@renderer/views/Dictionary.vue'),
+    meta: { bookWorkspace: true }
   },
   {
     path: '/setting-manager',
     name: 'SettingManager',
-    component: () => import('@renderer/views/SettingManager.vue')
+    component: () => import('@renderer/views/SettingManager.vue'),
+    meta: { bookWorkspace: true, workspaceModule: 'settings-knowledge-v2' }
   },
   {
     path: '/outline-manager',
     name: 'OutlineManager',
-    component: () => import('@renderer/views/OutlineManager.vue')
+    component: () => import('@renderer/views/OutlineManager.vue'),
+    meta: { bookWorkspace: true, workspaceModule: 'outlines-knowledge-v2' }
+  },
+  {
+    path: '/quick-notes',
+    name: 'QuickNotes',
+    component: () => import('@renderer/views/QuickNotes.vue'),
+    meta: { bookWorkspace: true }
   },
   {
     path: '/map-list',
     name: 'MapList',
-    component: () => import('@renderer/views/MapList.vue')
+    component: () => import('@renderer/views/MapList.vue'),
+    meta: { bookWorkspace: true }
   },
   {
     path: '/map-design',
     name: 'MapDesign',
-    component: () => import('@renderer/views/MapDesign.vue')
+    component: () => import('@renderer/views/MapDesign.vue'),
+    meta: { bookWorkspace: true }
   },
   {
     path: '/relationship-list',
     name: 'RelationshipList',
-    component: () => import('@renderer/views/RelationshipList.vue')
+    component: () => import('@renderer/views/RelationshipList.vue'),
+    meta: { bookWorkspace: true }
   },
   {
     path: '/relationship-design',
     name: 'RelationshipDesign',
-    component: () => import('@renderer/views/RelationshipDesign.vue')
+    component: () => import('@renderer/views/RelationshipDesign.vue'),
+    meta: { bookWorkspace: true }
   },
   {
     path: '/user-guide',
@@ -69,17 +85,20 @@ const routes = [
   {
     path: '/events-sequence',
     name: 'EventsSequence',
-    component: () => import('@renderer/views/EventsSequence.vue')
+    component: () => import('@renderer/views/EventsSequence.vue'),
+    meta: { bookWorkspace: true }
   },
   {
     path: '/organization-list',
     name: 'OrganizationList',
-    component: () => import('@renderer/views/OrganizationList.vue')
+    component: () => import('@renderer/views/OrganizationList.vue'),
+    meta: { bookWorkspace: true }
   },
   {
     path: '/organization-design',
     name: 'OrganizationDesign',
-    component: () => import('@renderer/views/OrganizationDesign.vue')
+    component: () => import('@renderer/views/OrganizationDesign.vue'),
+    meta: { bookWorkspace: true }
   },
   {
     path: '/novel-download',

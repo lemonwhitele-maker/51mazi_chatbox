@@ -36,5 +36,9 @@ lerna-debug.log*
 # Cache
 .eslintcache
 
+# Private portable API configuration and migration backups
+**/.51mazi/api-config*.json
+**/.51mazi/api-config*.tmp
+
 docs
 others

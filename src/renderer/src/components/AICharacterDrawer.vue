@@ -8,7 +8,9 @@
     header-class="ai-character-drawer__header"
     body-class="ai-character-drawer__body"
     :close-on-click-modal="false"
-    @update:model-value="$emit('update:modelValue', $event)"
+    :close-on-press-escape="!confirming"
+    :show-close="!confirming"
+    @update:model-value="handleCancel"
   >
     <div class="ai-character-drawer-content">
       <el-form
@@ -123,7 +125,7 @@
             :key="item.localPath"
             class="generated-item"
             :class="{ selected: selectedPath === item.localPath }"
-            @click="selectedPath = item.localPath"
+            @click="!confirming && (selectedPath = item.localPath)"
           >
             <img
               :src="item.previewUrl"
@@ -142,11 +144,11 @@
         {{ resolvedGeneratingHint }}
       </el-alert>
       <div class="ai-character-drawer-footer">
-        <el-button @click="handleCancel">{{ t('common.cancel') }}</el-button>
+        <el-button :disabled="confirming" @click="handleCancel">{{ t('common.cancel') }}</el-button>
         <el-button
           type="primary"
           :loading="generating"
-          :disabled="noImageProviders || !selectedProvider"
+          :disabled="noImageProviders || !selectedProvider || confirming"
           @click="handleGenerate"
         >
           {{ generatedList.length > 0 ? resolvedRegenerateButtonText : resolvedGenerateButtonText }}
@@ -154,10 +156,11 @@
         <el-button
           v-if="generatedList.length > 0"
           type="success"
-          :disabled="!selectedPath"
+          :disabled="!selectedPath || generating"
+          :loading="confirming"
           @click="handleConfirmUse"
         >
-          {{ t('aiCharacter.confirmUse') }}
+          {{ confirmButtonText || t('aiCharacter.confirmUse') }}
         </el-button>
       </div>
     </div>
@@ -165,7 +168,7 @@
 </template>
 
 <script setup>
-import { ref, watch, computed, toRef } from 'vue'
+import { ref, watch, computed, toRef, onBeforeUnmount } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import {
@@ -174,6 +177,7 @@ import {
   discardAICharacterImages
 } from '@renderer/service/tongyiwanxiang'
 import { useImageAiProviderSelect } from '@renderer/composables/useImageAiProviderSelect'
+import { pathToLocalFileUrl } from '@renderer/utils/localFileUrl'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -209,6 +213,9 @@ const props = defineProps({
   infoGeneratingMessage: { type: String, default: '' },
   validatePromptMessage: { type: String, default: '' },
   confirmSuccessMessage: { type: String, default: '' },
+  confirmButtonText: { type: String, default: '' },
+  /** Await the formal document save before closing or reporting success. */
+  confirmImage: { type: Function, default: null },
   /** 生成失败等场景下的简短类型名，用于错误提示 */
   generateFailTypeName: { type: String, default: '' }
 })
@@ -230,8 +237,25 @@ function labelForImageProvider(id) {
 
 const formRef = ref(null)
 const generating = ref(false)
+const confirming = ref(false)
 const generatedList = ref([]) // { localPath, previewUrl }
 const selectedPath = ref('')
+let currentSession = null
+
+function discardSession(session) {
+  if (!session) return
+  void discardAICharacterImages({ bookName: session.bookName, sessionId: session.id }).catch(
+    () => {}
+  )
+}
+
+function endSession() {
+  const session = currentSession
+  currentSession = null
+  generating.value = false
+  confirming.value = false
+  discardSession(session)
+}
 
 const form = ref({
   style: '',
@@ -382,6 +406,8 @@ watch(
   () => props.modelValue,
   (visible) => {
     if (visible) {
+      endSession()
+      currentSession = { id: crypto.randomUUID(), bookName: props.bookName }
       form.value.prompt = (props.appearance || '').trim()
       form.value.style = ''
       form.value.pose = ''
@@ -389,9 +415,7 @@ watch(
       generatedList.value = []
       selectedPath.value = ''
     } else {
-      if (generatedList.value.length > 0) {
-        discardAICharacterImages({ bookName: props.bookName }).catch(() => {})
-      }
+      endSession()
     }
   }
 )
@@ -417,9 +441,12 @@ function buildFullPrompt() {
 }
 
 async function handleGenerate() {
+  const session = currentSession
+  if (!session || generating.value || confirming.value) return
   try {
     await formRef.value.validate()
-    const bookName = (props.bookName || '').trim()
+    if (currentSession !== session) return
+    const bookName = (session.bookName || '').trim()
     if (!bookName) {
       ElMessage.error(t('aiCharacter.bookNameEmpty'))
       return
@@ -435,11 +462,16 @@ async function handleGenerate() {
       prompt: fullPrompt,
       size: FIXED_SIZE,
       bookName,
+      sessionId: session.id,
       negativePrompt: (form.value.negativePrompt || '').trim() || undefined,
       imageProvider: selectedProvider.value
     })
+    if (currentSession !== session) {
+      discardSession(session)
+      return
+    }
     if (res?.success && res.localPath) {
-      const previewUrl = `file://${res.localPath}`
+      const previewUrl = pathToLocalFileUrl(res.localPath)
       generatedList.value.push({ localPath: res.localPath, previewUrl })
       selectedPath.value = res.localPath
       ElMessage.success(t('aiCharacter.generatedSelectOrContinue'))
@@ -450,39 +482,59 @@ async function handleGenerate() {
       )
     }
   } catch (error) {
-    if (error !== false) ElMessage.error(error?.message || t('aiCharacter.checkFormInput'))
+    if (currentSession === session && error !== false)
+      ElMessage.error(error?.message || t('aiCharacter.checkFormInput'))
   } finally {
-    generating.value = false
+    if (currentSession === session) generating.value = false
   }
 }
 
 function handleCancel() {
-  if (generatedList.value.length > 0) {
-    discardAICharacterImages({ bookName: props.bookName }).catch(() => {})
-  }
+  if (confirming.value) return
+  endSession()
   emit('update:modelValue', false)
 }
 
 async function handleConfirmUse() {
-  if (!selectedPath.value) return
-  const bookName = (props.bookName || '').trim()
-  if (!bookName) return
+  const session = currentSession
+  const candidate = generatedList.value.find((item) => item.localPath === selectedPath.value)
+  if (!session || !candidate || generating.value || confirming.value) return
+  confirming.value = true
   try {
-    const res = await confirmAICharacterImage({
-      bookName,
-      chosenPath: selectedPath.value
-    })
+    const res =
+      candidate.confirmed ||
+      (await confirmAICharacterImage({
+        bookName: session.bookName,
+        sessionId: session.id,
+        chosenPath: candidate.localPath
+      }))
+    if (currentSession !== session) return
     if (res?.success && res.localPath) {
-      emit('character-image-generated', { localPath: res.localPath })
+      candidate.confirmed = res
+      if (props.confirmImage) await props.confirmImage(res)
+      if (currentSession !== session) return
+      emit('character-image-generated', res)
       emit('update:modelValue', false)
       ElMessage.success(resolvedConfirmSuccessMessage.value)
     } else {
       ElMessage.error(res?.message || t('aiCharacter.confirmFailed'))
     }
   } catch (error) {
-    ElMessage.error(error?.message || t('aiCharacter.confirmFailed'))
+    if (currentSession === session)
+      ElMessage.error(error?.message || t('aiCharacter.confirmFailed'))
+  } finally {
+    if (currentSession === session) confirming.value = false
   }
 }
+
+const removeDirectoryListener = window.electron.onApiConfigDirectoryChanged?.(() => {
+  endSession()
+  emit('update:modelValue', false)
+})
+onBeforeUnmount(() => {
+  endSession()
+  removeDirectoryListener?.()
+})
 </script>
 
 <!-- 抽屉 Teleport 到 body，header/body 用官方 class 挂接；无 scoped 避免匹配不到 -->

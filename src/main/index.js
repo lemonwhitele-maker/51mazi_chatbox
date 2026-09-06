@@ -4,12 +4,11 @@ import fs from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import Store from 'electron-store'
+import { LibraryApiConfigStore, isLibraryMetadataName } from './services/libraryApiConfigStore.js'
+import CharacterImageService from './services/characterImageService.js'
 import dayjs from 'dayjs'
 import pkg from 'electron-updater'
 import deepseekService from './services/deepseek.js'
-import outlineAiService from './services/outlineAi.js'
-import outlineChapterAiService from './services/outlineChapterAi.js'
-import settingAiService from './services/settingAi.js'
 import tongyiwanxiangService from './services/tongyiwanxiang.js'
 import {
   generateImageBuffer as generateImageBufferByProvider,
@@ -18,6 +17,23 @@ import {
 import * as geminiImagenService from './services/geminiImagen.js'
 import { validateConfigNonEmpty as validateDoubaoConfigNonEmpty } from './services/doubaoImage.js'
 import novelDownloader from './services/novelDownloader.js'
+import { registerBookRetrievalIpc } from './services/bookRetrievalIpc.js'
+import BookSavedSnapshotService, { safeSegment } from './services/bookSavedSnapshotService.js'
+import ChapterWriteService, {
+  ChapterWriteError,
+  chapterTargetId
+} from './services/chapterWriteService.js'
+import BookSearchIndexService from './services/bookSearchIndexService.js'
+import BookRetrievalService from './services/bookRetrievalService.js'
+import BookKnowledgeCatalogService from './services/bookKnowledgeCatalogService.js'
+import BookReferenceIndexService from './services/bookReferenceIndexService.js'
+import KnowledgeDocumentService from './services/knowledgeDocumentService.js'
+import { registerKnowledgeDocumentsIpc } from './services/knowledgeDocumentsIpc.js'
+import {
+  readHarnessQuickNotes,
+  writeHarnessQuickNotes
+} from './services/harnessQuickNotesService.js'
+import { registerHarnessIpc } from './services/harnessIpc.js'
 const { autoUpdater } = pkg
 const MAIN_I18N_MESSAGES = {
   'zh-CN': {
@@ -137,7 +153,7 @@ function getMacIcon() {
 }
 
 // 创建 store 实例
-const store = new Store({
+const legacyStore = new Store({
   // 可以设置加密
   // encryptionKey: 'your-encryption-key',
 
@@ -151,11 +167,140 @@ const store = new Store({
   }
 })
 
+const store = new LibraryApiConfigStore({
+  legacyStore,
+  onDirectoryChanged: (payload) => {
+    deepseekService.setApiKey(null)
+    tongyiwanxiangService.setApiKey(null)
+    if (!app.isReady()) return
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send('api-config-directory-changed', payload)
+    }
+  }
+})
+try {
+  store.initialize()
+} catch (error) {
+  console.error('书库 API 配置初始化失败，旧配置已保留:', error?.message || error)
+}
+deepseekService.setApiKeyProvider(() => store.get('deepseek.apiKey', null))
+
+let activeImageRequests = 0
+async function generateConfiguredImage(options) {
+  const configStore = store.bindApiStore()
+  activeImageRequests += 1
+  try {
+    return await generateImageBufferByProvider(configStore, options)
+  } finally {
+    activeImageRequests -= 1
+  }
+}
+
+const bookSnapshotService = new BookSavedSnapshotService({
+  booksDirProvider: () => store.get('booksDir') || store.get('config.booksDir') || ''
+})
+
+function safeBookDirectoryName(value, { sanitize = false } = {}) {
+  const raw = sanitize ? String(value || '').replace(/[\\/:*?"<>|]/g, '_') : String(value || '')
+  const name = safeSegment(raw, '书籍名称')
+  if (isLibraryMetadataName(name)) throw new Error('该名称用于书库配置，请使用其他书名')
+  if (process.platform === 'win32' && /[. ]$/.test(name)) {
+    throw new Error('书籍名称不能以句点或空格结尾')
+  }
+  return name
+}
+
+function resolveBookDirectoryForCreate(value, options) {
+  const name = safeBookDirectoryName(value, options)
+  const booksDir = bookSnapshotService.getBooksDir()
+  const bookPath = bookSnapshotService.resolveInside(booksDir, name, '书籍')
+  if (fs.existsSync(bookPath) && fs.lstatSync(bookPath).isSymbolicLink()) {
+    throw new Error('书籍目录不能是符号链接或目录联接')
+  }
+  return { name, bookPath }
+}
+const bookKnowledgeCatalogService = new BookKnowledgeCatalogService({
+  snapshotService: bookSnapshotService
+})
+const bookReferenceIndexService = new BookReferenceIndexService({
+  snapshotService: bookSnapshotService,
+  catalogService: bookKnowledgeCatalogService
+})
+const knowledgeDocumentService = new KnowledgeDocumentService({
+  snapshotService: bookSnapshotService,
+  onCommitted: async ({ bookName, scope }) => {
+    bookKnowledgeCatalogService.invalidate(bookName)
+    bookKnowledgeCatalogService.buildCatalog(bookName, scope, { force: true })
+    bookReferenceIndexService.invalidate(bookName)
+    bookReferenceIndexService.buildIndex(bookName, { force: true })
+  }
+})
+const bookSearchIndexService = new BookSearchIndexService({
+  snapshotService: bookSnapshotService,
+  catalogService: bookKnowledgeCatalogService
+})
+const bookRetrievalService = new BookRetrievalService({
+  snapshotService: bookSnapshotService,
+  searchIndexService: bookSearchIndexService,
+  catalogService: bookKnowledgeCatalogService,
+  referenceIndexService: bookReferenceIndexService
+})
+const chapterWriteService = new ChapterWriteService({
+  snapshotService: bookSnapshotService,
+  onCommitted: async ({ bookName, volumeName, chapterName, previousContent, content }) => {
+    updateChapterStats(bookName, volumeName, chapterName, previousContent, content)
+    await updateBookMetadata(bookName)
+  }
+})
+const bookRetrievalIpc = registerBookRetrievalIpc({
+  ipcMain,
+  retrievalService: bookRetrievalService,
+  searchIndexService: bookSearchIndexService,
+  catalogService: bookKnowledgeCatalogService,
+  referenceIndexService: bookReferenceIndexService
+})
+const knowledgeDocumentsIpc = registerKnowledgeDocumentsIpc({
+  ipcMain,
+  documentService: knowledgeDocumentService,
+  catalogService: bookKnowledgeCatalogService,
+  referenceIndexService: bookReferenceIndexService
+})
+
+const harnessIpc = registerHarnessIpc({
+  ipcMain,
+  snapshotService: bookSnapshotService,
+  retrievalService: bookRetrievalService,
+  chapterWriteService,
+  knowledgeDocumentService,
+  knowledgeCatalogService: bookKnowledgeCatalogService,
+  referenceIndexService: bookReferenceIndexService,
+  legacyStore,
+  settingsStore: store,
+  getWindows: () => BrowserWindow.getAllWindows(),
+  clientVersion: app.getVersion()
+})
+// 起名和场景画面提炼复用 Agent 模型配置。
+deepseekService.setAgentConfigService(harnessIpc.service.agentModels)
+
+app.on('before-quit', () => {
+  void harnessIpc.dispose()
+  bookRetrievalIpc.dispose()
+  knowledgeDocumentsIpc.dispose()
+})
+
 ipcMain.handle('store:get', async (_, key) => {
   return store.get(key)
 })
 
 ipcMain.handle('store:set', async (_, key, value) => {
+  if (key === 'booksDir' || key === 'config.booksDir') {
+    const currentDir = String(store.get('booksDir') || store.get('config.booksDir') || '')
+    const nextDir = String(value || '')
+    const changed = resolve(currentDir).toLowerCase() !== resolve(nextDir).toLowerCase()
+    if (changed && (bookEditorWindows.size || activeImageRequests)) {
+      throw new Error('请先关闭书籍窗口并等待图片生成完成，再切换书库目录')
+    }
+  }
   store.set(key, value)
   return true
 })
@@ -734,9 +879,9 @@ ipcMain.handle('novel:download-chapters', async (event, { chapterList, sourceId 
 // 创建书籍
 ipcMain.handle('create-book', async (event, bookInfo) => {
   // 1. 处理文件夹名合法性
-  const safeName = bookInfo.name.replace(/[\\/:*?"<>|]/g, '_')
-  const booksDir = store.get('booksDir')
-  const bookPath = join(booksDir, safeName)
+  const { name: safeName, bookPath } = resolveBookDirectoryForCreate(bookInfo?.name, {
+    sanitize: true
+  })
   if (!fs.existsSync(bookPath)) {
     fs.mkdirSync(bookPath)
   }
@@ -787,6 +932,9 @@ ipcMain.handle('create-book', async (event, bookInfo) => {
   fs.mkdirSync(join(notesPath, '设定'), { recursive: true })
   fs.mkdirSync(join(notesPath, '人物'), { recursive: true })
 
+  // 7. 为节点式知识区创建可直接编辑的样例（人物、设定、大纲各一份）
+  await knowledgeDocumentService.initializeBook({ bookName: safeName })
+
   return true
 })
 
@@ -804,7 +952,7 @@ ipcMain.handle('read-books-dir', async () => {
     return books
   }
   for (const file of files) {
-    if (file.isDirectory()) {
+    if (file.isDirectory() && !isLibraryMetadataName(file.name)) {
       const metaPath = join(booksDir, file.name, 'mazi.json')
       if (fs.existsSync(metaPath)) {
         try {
@@ -856,17 +1004,9 @@ ipcMain.handle('get-book-word-count', async (event, bookName) => {
 
 // 删除书籍
 ipcMain.handle('delete-book', async (event, { name }) => {
+  if (isLibraryMetadataName(name)) return false
   try {
-    const booksDir = store.get('booksDir')
-    if (!booksDir) {
-      return false
-    }
-
-    const bookPath = join(booksDir, name)
-
-    if (!fs.existsSync(bookPath)) {
-      return false
-    }
+    const bookPath = bookSnapshotService.resolveBookPath(name)
 
     // 删除整个书籍文件夹
     fs.rmSync(bookPath, { recursive: true, force: true })
@@ -880,15 +1020,11 @@ ipcMain.handle('delete-book', async (event, { name }) => {
 // 编辑书籍
 ipcMain.handle('edit-book', async (event, bookInfo) => {
   try {
-    const booksDir = store.get('booksDir')
-
     // 如果传入了原始名称，使用原始名称定位文件夹
-    const originalName = bookInfo.originalName || bookInfo.name
-    let bookPath = join(booksDir, originalName)
-
-    if (!fs.existsSync(bookPath)) {
-      return { success: false, message: '书籍不存在' }
-    }
+    const originalName = safeBookDirectoryName(bookInfo.originalName || bookInfo.name)
+    const nextName = safeBookDirectoryName(bookInfo.name)
+    const booksDir = bookSnapshotService.getBooksDir()
+    let bookPath = bookSnapshotService.resolveBookPath(originalName)
 
     const metaPath = join(bookPath, 'mazi.json')
 
@@ -959,8 +1095,8 @@ ipcMain.handle('edit-book', async (event, bookInfo) => {
     }
 
     // 如果书名发生变化，需要重命名文件夹
-    if (bookInfo.name !== originalName) {
-      const newBookPath = join(booksDir, bookInfo.name)
+    if (nextName !== originalName) {
+      const newBookPath = bookSnapshotService.resolveInside(booksDir, nextName, '书籍')
 
       // 检查新名称是否已存在
       if (fs.existsSync(newBookPath)) {
@@ -1006,6 +1142,7 @@ ipcMain.handle('edit-book', async (event, bookInfo) => {
 
 // 打开书籍编辑窗口
 ipcMain.handle('open-book-editor-window', async (event, { id, name }) => {
+  bookSnapshotService.resolveBookPath(name)
   if (bookEditorWindows.has(id)) {
     // 已有窗口，聚焦
     const win = bookEditorWindows.get(id)
@@ -1196,7 +1333,9 @@ ipcMain.handle('create-chapter', async (event, { bookName, volumeId }) => {
   }
 
   // 根据设置生成章节名称
-  const chapterName = `${generateChapterName(nextChapterNumber, chapterSettings)} `
+  // 文件名只保存正式章节名。标题后的输入占位空格由 Renderer 编辑态提供，
+  // 否则读取链路会 trim 章节名并尝试打开另一个不存在的文件。
+  const chapterName = generateChapterName(nextChapterNumber, chapterSettings)
   const filePath = join(volumePath, `${chapterName}.txt`)
 
   fs.writeFileSync(filePath, '')
@@ -2087,14 +2226,22 @@ ipcMain.handle(
 
 // 读取章节内容
 ipcMain.handle('read-chapter', async (event, { bookName, volumeName, chapterName }) => {
-  const booksDir = store.get('booksDir')
-  const chapterPath = join(booksDir, bookName, '正文', volumeName, `${chapterName}.txt`)
-  if (!fs.existsSync(chapterPath)) {
-    return { success: false, message: '章节不存在' }
+  try {
+    const snapshot = bookSnapshotService.readChapterSnapshot(
+      bookName,
+      chapterTargetId(volumeName, chapterName)
+    )
+    return {
+      success: true,
+      content: snapshot.content,
+      contentHash: snapshot.rawHash,
+      savedAt: snapshot.savedAt,
+      fileSize: snapshot.metadata.fileSize,
+      lineEnding: snapshot.metadata.lineEnding
+    }
+  } catch (error) {
+    return { success: false, code: 'CHAPTER_READ_FAILED', message: error.message || '章节读取失败' }
   }
-  const content = fs.readFileSync(chapterPath, 'utf-8')
-  // 章节标题可单独存储或直接用文件名
-  return { success: true, content }
 })
 
 // 检查章节是否存在（用于 AI 章纲生成前校验）
@@ -2106,7 +2253,12 @@ ipcMain.handle('chapter:check-exists', async (event, { bookName, volumeName, cha
   }
 
   const chapterPath = join(booksDir, bookName, '正文', volumeName, `${cleanChapterName}.txt`)
-  return { success: true, exists: fs.existsSync(chapterPath) }
+  if (!fs.existsSync(chapterPath)) return { success: true, exists: false, contentHash: null }
+  const snapshot = bookSnapshotService.readChapterSnapshot(
+    bookName,
+    chapterTargetId(volumeName, cleanChapterName)
+  )
+  return { success: true, exists: true, contentHash: snapshot.rawHash }
 })
 
 // 计算章节字数（排除空格、换行符、制表符等格式字符）
@@ -2264,68 +2416,108 @@ function updateChapterStats(bookName, volumeName, chapterName, oldContent, newCo
 // 修改保存章节内容的处理函数
 ipcMain.handle(
   'save-chapter',
-  async (event, { bookName, volumeName, chapterName, newName, content }) => {
-    const booksDir = store.get('booksDir')
-    const volumePath = join(booksDir, bookName, '正文', volumeName)
-    const oldPath = join(volumePath, `${chapterName}.txt`)
-    const newPath = join(volumePath, `${newName || chapterName}.txt`)
+  async (
+    event,
+    { bookName, volumeName, chapterName, newName, content, expectedHash = '' } = {}
+  ) => {
+    try {
+      const currentTargetId = chapterTargetId(volumeName, chapterName)
+      const requestedName = String(newName || chapterName).trim()
+      const nextTargetId = chapterTargetId(volumeName, requestedName)
+      const currentSnapshot = bookSnapshotService.readChapterSnapshot(bookName, currentTargetId)
+      let renamedPath = ''
 
-    if (!fs.existsSync(oldPath)) {
-      return { success: false, message: '章节不存在' }
-    }
-
-    // 读取旧内容用于统计
-    const oldContent = fs.readFileSync(oldPath, 'utf-8')
-
-    // 1. 先写内容到原文件
-    fs.writeFileSync(oldPath, content, 'utf-8')
-
-    // 2. 判断是否需要重命名
-    if (newName && newName !== chapterName) {
-      if (fs.existsSync(newPath)) {
-        return { success: false, message: '章节名已存在', name: chapterName }
+      if (nextTargetId !== currentTargetId) {
+        const bookPath = bookSnapshotService.resolveBookPath(bookName)
+        renamedPath = bookSnapshotService.resolveInside(
+          join(bookPath, '正文'),
+          nextTargetId,
+          '章节'
+        )
+        if (fs.existsSync(renamedPath)) {
+          return {
+            success: false,
+            code: 'CHAPTER_NAME_EXISTS',
+            message: '章节名已存在',
+            name: chapterName
+          }
+        }
       }
-      fs.renameSync(oldPath, newPath)
+
+      const result = await chapterWriteService.writeChapterWithExpectedHash({
+        bookName,
+        volumeName,
+        chapterName,
+        expectedHash,
+        content
+      })
+
+      if (renamedPath) fs.renameSync(currentSnapshot.metadata.filePath, renamedPath)
+
+      return {
+        success: true,
+        name: requestedName,
+        previousHash: result.previousHash,
+        contentHash: result.contentHash,
+        savedAt: result.savedAt,
+        bytesWritten: result.bytesWritten
+      }
+    } catch (error) {
+      const code = error instanceof ChapterWriteError ? error.code : 'CHAPTER_WRITE_FAILED'
+      return {
+        success: false,
+        code,
+        message: error.message || '章节保存失败',
+        currentHash: error.currentHash || null,
+        retryable: error.retryable === true
+      }
     }
-
-    // 3. 更新统计
-    updateChapterStats(bookName, volumeName, chapterName, oldContent, content)
-
-    // 4. 更新书籍元数据
-    await updateBookMetadata(bookName)
-
-    return { success: true, name: newName || chapterName }
   }
 )
 
 // 章节写入（AI 章纲生成使用：支持创建或覆盖）
 ipcMain.handle(
   'chapter:upsert',
-  async (event, { bookName, volumeName, chapterName, content, overwrite = false }) => {
+  async (event, { bookName, volumeName, chapterName, content, overwrite = false, expectedHash = '' }) => {
     try {
-      const booksDir = store.get('booksDir')
       const cleanChapterName = String(chapterName || '').trim()
       if (!bookName || !volumeName || !cleanChapterName) {
         return { success: false, exists: false, message: '参数不完整' }
       }
 
-      const volumePath = join(booksDir, bookName, '正文', volumeName)
-      if (!fs.existsSync(volumePath)) {
-        fs.mkdirSync(volumePath, { recursive: true })
-      }
-
-      const chapterPath = join(volumePath, `${cleanChapterName}.txt`)
+      const bookPath = bookSnapshotService.resolveBookPath(bookName)
+      const chapterPath = bookSnapshotService.resolveInside(
+        bookPath,
+        join('正文', chapterTargetId(volumeName, cleanChapterName)),
+        '正文'
+      )
       const chapterExists = fs.existsSync(chapterPath)
       if (chapterExists && !overwrite) {
         return { success: false, exists: true, message: '章节已存在' }
       }
-
-      const oldContent = chapterExists ? fs.readFileSync(chapterPath, 'utf-8') : ''
-      fs.writeFileSync(chapterPath, String(content || ''), 'utf-8')
-      updateChapterStats(bookName, volumeName, cleanChapterName, oldContent, String(content || ''))
-      await updateBookMetadata(bookName)
-
-      return { success: true, exists: chapterExists, chapterName: cleanChapterName }
+      if (chapterExists && !expectedHash) {
+        return { success: false, exists: true, message: '章节版本信息缺失，请重新确认覆盖' }
+      }
+      const result = chapterExists
+        ? await chapterWriteService.writeChapterWithExpectedHash({
+            bookName,
+            volumeName,
+            chapterName: cleanChapterName,
+            expectedHash,
+            content
+          })
+        : await chapterWriteService.createChapter({
+            bookName,
+            volumeName,
+            chapterName: cleanChapterName,
+            content
+          })
+      return {
+        success: true,
+        exists: chapterExists,
+        chapterName: cleanChapterName,
+        contentHash: result.contentHash
+      }
     } catch (error) {
       console.error('写入章节失败:', error)
       return { success: false, exists: false, message: error.message || '写入章节失败' }
@@ -2423,172 +2615,35 @@ ipcMain.handle('write-timeline', async (event, { bookName, data }) => {
   }
 })
 
-// 大纲数据读写
-ipcMain.handle('read-outlines', async (event, { bookName }) => {
-  const booksDir = store.get('booksDir')
-  const bookPath = join(booksDir, bookName)
-  const outlinePath = join(bookPath, 'outlines.json')
-  if (!fs.existsSync(outlinePath)) {
-    return null
-  }
+// 速记属于 51mazi Harness 的本地数据，不进入外部模型的默认上下文。
+ipcMain.handle('harness:quick-notes:read', async (_, { bookName } = {}) => {
   try {
-    return JSON.parse(fs.readFileSync(outlinePath, 'utf-8'))
-  } catch {
-    return null
+    return { success: true, ...readHarnessQuickNotes(bookSnapshotService, bookName) }
+  } catch (error) {
+    console.error('读取助手速记失败:', error)
+    return { success: false, message: error.message, content: '' }
   }
 })
 
-// 保存大纲数据
-ipcMain.handle('write-outlines', async (event, { bookName, data }) => {
-  const booksDir = store.get('booksDir')
-  const bookPath = join(booksDir, bookName)
-  const outlinePath = join(bookPath, 'outlines.json')
-
+ipcMain.handle('harness:quick-notes:write', async (_, { bookName, content } = {}) => {
   try {
-    if (!fs.existsSync(bookPath)) {
-      fs.mkdirSync(bookPath, { recursive: true })
+    return {
+      success: true,
+      ...writeHarnessQuickNotes(bookSnapshotService, bookName, content)
     }
-
-    fs.writeFileSync(outlinePath, JSON.stringify(data, null, 2), 'utf-8')
-    return { success: true }
   } catch (error) {
-    console.error('保存大纲失败:', error)
+    console.error('保存助手速记失败:', error)
     return { success: false, message: error.message }
   }
 })
 
-function defaultOutlineAiSessionsPayload() {
-  return {
-    version: 1,
-    nodes: {}
-  }
-}
-
-// 读取 AI 大纲会话数据
-ipcMain.handle('read-outline-ai-sessions', async (event, { bookName }) => {
-  const booksDir = store.get('booksDir')
-  const bookPath = join(booksDir, bookName)
-  const sessionsPath = join(bookPath, 'outline-ai-sessions.json')
-  if (!fs.existsSync(sessionsPath)) {
-    return defaultOutlineAiSessionsPayload()
-  }
+// 从 Markdown 人物文档读取高亮、关系图所需资料。
+ipcMain.handle('read-characters', async (_, { bookName }) => {
   try {
-    const parsed = JSON.parse(fs.readFileSync(sessionsPath, 'utf-8'))
-    return parsed && typeof parsed === 'object' ? parsed : defaultOutlineAiSessionsPayload()
-  } catch {
-    return defaultOutlineAiSessionsPayload()
-  }
-})
-
-// 保存 AI 大纲会话数据
-ipcMain.handle('write-outline-ai-sessions', async (event, { bookName, data }) => {
-  const booksDir = store.get('booksDir')
-  const bookPath = join(booksDir, bookName)
-  const sessionsPath = join(bookPath, 'outline-ai-sessions.json')
-
-  try {
-    if (!fs.existsSync(bookPath)) {
-      fs.mkdirSync(bookPath, { recursive: true })
-    }
-
-    const payload = data && typeof data === 'object' ? data : defaultOutlineAiSessionsPayload()
-    fs.writeFileSync(sessionsPath, JSON.stringify(payload, null, 2), 'utf-8')
-    return { success: true }
+    return bookKnowledgeCatalogService.listCharacterProfiles(bookName)
   } catch (error) {
-    console.error('保存 AI 大纲会话失败:', error)
-    return { success: false, message: error.message }
-  }
-})
-
-// 人物谱数据读写
-ipcMain.handle('read-characters', async (event, { bookName }) => {
-  const booksDir = store.get('booksDir')
-  const bookPath = join(booksDir, bookName)
-  const charactersPath = join(bookPath, 'characters.json')
-  if (!fs.existsSync(charactersPath)) return []
-  try {
-    return JSON.parse(fs.readFileSync(charactersPath, 'utf-8'))
-  } catch {
+    console.warn('读取人物知识文档失败:', error?.message || error)
     return []
-  }
-})
-
-// 保存人物谱数据
-ipcMain.handle('write-characters', async (event, { bookName, data }) => {
-  const booksDir = store.get('booksDir')
-  const bookPath = join(booksDir, bookName)
-  const charactersPath = join(bookPath, 'characters.json')
-
-  try {
-    // 确保目录存在
-    if (!fs.existsSync(bookPath)) {
-      fs.mkdirSync(bookPath, { recursive: true })
-    }
-
-    fs.writeFileSync(charactersPath, JSON.stringify(data, null, 2), 'utf-8')
-    return { success: true }
-  } catch (error) {
-    console.error('保存人物谱失败:', error)
-    return { success: false, message: error.message }
-  }
-})
-
-// 扩展档案（坐骑 / 怪兽 / 妖兽 / 宝器），与人物谱分文件存储，避免影响编辑器人物高亮等逻辑
-const ENTITY_PROFILES_FILE = 'entity_profiles.json'
-const ENTITY_PROFILE_KEYS = ['mount', 'monster', 'spirit_beast', 'artifact']
-
-function defaultEntityProfilesPayload() {
-  return {
-    mount: [],
-    monster: [],
-    spirit_beast: [],
-    artifact: []
-  }
-}
-
-function readEntityProfilesFromDisk(bookPath) {
-  const profilesPath = join(bookPath, ENTITY_PROFILES_FILE)
-  if (!fs.existsSync(profilesPath)) return defaultEntityProfilesPayload()
-  try {
-    const raw = JSON.parse(fs.readFileSync(profilesPath, 'utf-8'))
-    const out = defaultEntityProfilesPayload()
-    for (const key of ENTITY_PROFILE_KEYS) {
-      out[key] = Array.isArray(raw[key]) ? raw[key] : []
-    }
-    return out
-  } catch {
-    return defaultEntityProfilesPayload()
-  }
-}
-
-ipcMain.handle('read-entity-profiles', async (event, { bookName }) => {
-  const booksDir = store.get('booksDir')
-  if (!bookName) return defaultEntityProfilesPayload()
-  const bookPath = join(booksDir, bookName)
-  return readEntityProfilesFromDisk(bookPath)
-})
-
-ipcMain.handle('write-entity-profile-category', async (event, { bookName, category, data }) => {
-  const booksDir = store.get('booksDir')
-  const bookPath = join(booksDir, bookName)
-  const profilesPath = join(bookPath, ENTITY_PROFILES_FILE)
-  if (!bookName || !ENTITY_PROFILE_KEYS.includes(category)) {
-    return { success: false, message: '参数无效' }
-  }
-  if (!Array.isArray(data)) {
-    return { success: false, message: '数据须为数组' }
-  }
-  try {
-    if (!fs.existsSync(bookPath)) {
-      fs.mkdirSync(bookPath, { recursive: true })
-    }
-    const all = readEntityProfilesFromDisk(bookPath)
-    all[category] = data
-    fs.writeFileSync(profilesPath, JSON.stringify(all, null, 2), 'utf-8')
-    return { success: true }
-  } catch (error) {
-    console.error('保存扩展档案失败:', error)
-    return { success: false, message: error.message }
   }
 })
 
@@ -2621,101 +2676,6 @@ ipcMain.handle('write-dictionary', async (event, { bookName, data }) => {
     return { success: true }
   } catch (error) {
     console.error('保存词条字典失败:', error)
-    return { success: false, message: error.message }
-  }
-})
-
-const DEFAULT_SETTINGS_DATA = {
-  categories: [
-    {
-      id: 'default',
-      name: '默认设定',
-      introduction: '',
-      children: [],
-      items: []
-    }
-  ]
-}
-
-function cloneDefaultSettingsData() {
-  return JSON.parse(JSON.stringify(DEFAULT_SETTINGS_DATA))
-}
-
-function normalizeSettingItems(items, categoryIndexPath) {
-  if (!Array.isArray(items)) return []
-
-  return items
-    .filter((item) => item && typeof item === 'object')
-    .map((item, itemIndex) => ({
-      id: String(item.id || `setting-${Date.now()}-${categoryIndexPath}-${itemIndex}`),
-      name: String(item.name || '').trim(),
-      introduction: String(item.introduction || '').trim()
-    }))
-}
-
-function normalizeSettingCategories(categories, parentIndexPath = 'root') {
-  if (!Array.isArray(categories)) return []
-
-  return categories
-    .filter((category) => category && typeof category === 'object')
-    .map((category, categoryIndex) => {
-      const indexPath = `${parentIndexPath}-${categoryIndex}`
-
-      return {
-        id: String(category.id || `category-${Date.now()}-${indexPath}`),
-        name: String(category.name || '').trim() || '未命名分类',
-        introduction: String(category.introduction || '').trim(),
-        children: normalizeSettingCategories(category.children, indexPath),
-        items: normalizeSettingItems(category.items, indexPath)
-      }
-    })
-}
-
-function normalizeSettingsData(data) {
-  const categories = normalizeSettingCategories(data?.categories)
-
-  if (!categories.length) {
-    return cloneDefaultSettingsData()
-  }
-
-  return { categories }
-}
-
-// 设定管理数据读写
-ipcMain.handle('read-settings', async (event, { bookName }) => {
-  if (!bookName) return cloneDefaultSettingsData()
-
-  const booksDir = store.get('booksDir')
-  const bookPath = join(booksDir, bookName)
-  const settingsPath = join(bookPath, 'settings.json')
-  if (!fs.existsSync(settingsPath)) return cloneDefaultSettingsData()
-
-  try {
-    return normalizeSettingsData(JSON.parse(fs.readFileSync(settingsPath, 'utf-8')))
-  } catch {
-    return cloneDefaultSettingsData()
-  }
-})
-
-ipcMain.handle('write-settings', async (event, { bookName, data }) => {
-  const booksDir = store.get('booksDir')
-  const bookPath = join(booksDir, bookName)
-  const settingsPath = join(bookPath, 'settings.json')
-
-  try {
-    if (!bookName) {
-      throw new Error('书籍名称不能为空')
-    }
-
-    // 确保目录存在
-    if (!fs.existsSync(bookPath)) {
-      fs.mkdirSync(bookPath, { recursive: true })
-    }
-
-    fs.writeFileSync(settingsPath, JSON.stringify(normalizeSettingsData(data), null, 2), 'utf-8')
-    return { success: true }
-  } catch (error) {
-    console.error('保存设定管理失败:', error)
     return { success: false, message: error.message }
   }
 })
@@ -3621,9 +3581,8 @@ deepseekService.initApiKey((key) => store.get(key))
 // 设置 DeepSeek API Key
 ipcMain.handle('deepseek:set-api-key', async (_, apiKey) => {
   try {
-    deepseekService.setApiKey(apiKey)
-    // 保存到 store
     store.set('deepseek.apiKey', apiKey)
+    deepseekService.setApiKey(null)
     return { success: true }
   } catch (error) {
     console.error('设置 DeepSeek API Key 失败:', error)
@@ -3635,14 +3594,6 @@ ipcMain.handle('deepseek:set-api-key', async (_, apiKey) => {
 ipcMain.handle('deepseek:get-api-key', async () => {
   try {
     const apiKey = await deepseekService.getApiKey()
-    // 如果服务中没有，从 store 读取
-    if (!apiKey) {
-      const storedKey = store.get('deepseek.apiKey', null)
-      if (storedKey) {
-        deepseekService.setApiKey(storedKey)
-        return { success: true, apiKey: storedKey }
-      }
-    }
     return { success: true, apiKey: apiKey || null }
   } catch (error) {
     console.error('获取 DeepSeek API Key 失败:', error)
@@ -3680,92 +3631,6 @@ ipcMain.handle('deepseek:validate-api-key', async () => {
   }
 })
 
-// AI 润色整章（用于编辑器）
-ipcMain.handle('deepseek:polish-text', async (_, { text }) => {
-  try {
-    await deepseekService.initApiKey((key) => store.get(key))
-    const content = await deepseekService.polishChapter(text)
-    return { success: true, content }
-  } catch (error) {
-    console.error('AI 润色失败:', error)
-    return { success: false, message: error.message, content: '' }
-  }
-})
-
-ipcMain.handle('deepseek:outline-task', async (_, payload) => {
-  try {
-    await deepseekService.initApiKey((key) => store.get(key))
-    const result = await outlineAiService.runTask(payload || {})
-    return { success: true, ...result }
-  } catch (error) {
-    console.error('AI 大纲任务失败:', error)
-    return {
-      success: false,
-      message: error.message || 'AI 大纲任务失败'
-    }
-  }
-})
-
-ipcMain.handle('deepseek:refine-setting', async (_, payload) => {
-  try {
-    await deepseekService.initApiKey((key) => store.get(key))
-    const result = await settingAiService.refineSetting(payload || {})
-    return { success: true, ...result }
-  } catch (error) {
-    console.error('AI 完善设定失败:', error)
-    return {
-      success: false,
-      message: error.message || 'AI 完善设定失败',
-      content: ''
-    }
-  }
-})
-
-ipcMain.handle('deepseek:generate-chapter-from-outline', async (_, payload) => {
-  try {
-    await deepseekService.initApiKey((key) => store.get(key))
-    const raw = payload || {}
-    const booksDir = store.get('booksDir')
-    const rawBookName = String(raw.bookName || '').trim()
-    const bookName =
-      rawBookName && !rawBookName.includes('..') && !/[\\/]/.test(rawBookName) ? rawBookName : ''
-    const bookPath =
-      bookName && booksDir && typeof booksDir === 'string' ? join(booksDir, bookName) : ''
-    const safeBookPath = bookPath && fs.existsSync(bookPath) ? bookPath : ''
-    const result = await outlineChapterAiService.generateChapterFromOutline({
-      ...raw,
-      bookPath: safeBookPath
-    })
-    return { success: true, ...result }
-  } catch (error) {
-    console.error('AI 章纲生成章节失败:', error)
-    return {
-      success: false,
-      message: error.message || 'AI 章纲生成章节失败',
-      content: ''
-    }
-  }
-})
-
-// AI 续写（用于编辑器）
-ipcMain.handle('deepseek:continue-write', async (_, payload) => {
-  try {
-    await deepseekService.initApiKey((key) => store.get(key))
-    const { text = '', prompt = '', maxAddWords = 0 } = payload || {}
-    const numericMax = Number(maxAddWords)
-    const safeMaxAddWords = Number.isFinite(numericMax) ? Math.max(0, Math.floor(numericMax)) : 0
-    const content = await deepseekService.continueChapter(
-      String(text),
-      String(prompt || ''),
-      safeMaxAddWords
-    )
-    return { success: true, content }
-  } catch (error) {
-    console.error('AI 续写失败:', error)
-    return { success: false, message: error.message, content: '' }
-  }
-})
-
 // AI 场景图：将小说节选提炼为文生图画面描述（用于「AI 提炼画面」）
 ipcMain.handle('deepseek:scene-visual-prompt', async (_, { text }) => {
   try {
@@ -3780,12 +3645,10 @@ ipcMain.handle('deepseek:scene-visual-prompt', async (_, { text }) => {
 
 // --------- 通义万相 AI 封面 ---------
 
-tongyiwanxiangService.initApiKey((key) => store.get(key))
-
 ipcMain.handle('tongyiwanxiang:set-api-key', async (_, apiKey) => {
   try {
-    tongyiwanxiangService.setApiKey(apiKey)
     store.set('tongyiwanxiang.apiKey', apiKey)
+    tongyiwanxiangService.setApiKey(null)
     return { success: true }
   } catch (error) {
     console.error('设置通义万相 API Key 失败:', error)
@@ -3795,14 +3658,7 @@ ipcMain.handle('tongyiwanxiang:set-api-key', async (_, apiKey) => {
 
 ipcMain.handle('tongyiwanxiang:get-api-key', async () => {
   try {
-    let apiKey = tongyiwanxiangService.getApiKey()
-    if (!apiKey) {
-      const stored = store.get('tongyiwanxiang.apiKey', null)
-      if (stored) {
-        tongyiwanxiangService.setApiKey(stored)
-        apiKey = stored
-      }
-    }
+    const apiKey = store.get('tongyiwanxiang.apiKey', null)
     return { success: true, apiKey: apiKey || null }
   } catch (error) {
     console.error('获取通义万相 API Key 失败:', error)
@@ -3812,8 +3668,7 @@ ipcMain.handle('tongyiwanxiang:get-api-key', async () => {
 
 ipcMain.handle('tongyiwanxiang:validate-api-key', async () => {
   try {
-    await tongyiwanxiangService.initApiKey((key) => store.get(key))
-    const result = await tongyiwanxiangService.validateApiKey()
+    const result = await tongyiwanxiangService.validateApiKey(store.get('tongyiwanxiang.apiKey', ''))
     return { success: true, isValid: result.isValid, message: result.message }
   } catch (error) {
     console.error('验证通义万相 API Key 失败:', error)
@@ -3922,7 +3777,6 @@ ipcMain.handle('imageAi:validate-doubao-config', async () => {
 // 生成封面：调用通义万相 → 下载图片 → 保存到书籍目录
 ipcMain.handle('tongyiwanxiang:generate-cover', async (_, options) => {
   try {
-    await tongyiwanxiangService.initApiKey((key) => store.get(key))
     const { prompt, size, bookName, bookFolderName, negativePrompt = '' } = options || {}
     if (!prompt || !size || !bookName) {
       return {
@@ -3936,11 +3790,10 @@ ipcMain.handle('tongyiwanxiang:generate-cover', async (_, options) => {
     }
     const rawFolder =
       bookFolderName != null && String(bookFolderName).trim() !== '' ? bookFolderName : bookName
-    const safeName = String(rawFolder).replace(/[\\/:*?"<>|]/g, '_')
-    const bookPath = join(booksDir, safeName)
+    const { bookPath } = resolveBookDirectoryForCreate(rawFolder, { sanitize: true })
     fs.mkdirSync(bookPath, { recursive: true })
 
-    const buf = await generateImageBufferByProvider(store, {
+    const buf = await generateConfiguredImage({
       imageProvider: options?.imageProvider,
       prompt,
       size,
@@ -3977,8 +3830,8 @@ ipcMain.handle('tongyiwanxiang:confirm-cover', async (_, options) => {
     }
     const rawFolder =
       bookFolderName != null && String(bookFolderName).trim() !== '' ? bookFolderName : bookName
-    const safeName = String(rawFolder).replace(/[\\/:*?"<>|]/g, '_')
-    const bookPath = join(booksDir, safeName)
+    const safeName = safeBookDirectoryName(String(rawFolder).replace(/[\\/:*?"<>|]/g, '_'))
+    const bookPath = bookSnapshotService.resolveBookPath(safeName)
     const resolvedBook = resolve(bookPath)
     const resolvedChosen = resolve(chosenPath)
     if (!fs.existsSync(resolvedChosen)) {
@@ -4007,112 +3860,35 @@ ipcMain.handle('tongyiwanxiang:discard-ai-covers', async () => {
   return { success: true }
 })
 
-// --------- 通义万相 AI 人物图 ---------
-// 生成人物图：调用通义万相 → 下载图片 → 保存到书籍目录下的 ai_character_temp
-const AI_CHARACTER_TEMP_DIR = 'ai_character_temp'
-/** 人物图列表存储目录（多张人物图） */
-const CHARACTER_IMAGES_DIR = 'character_images'
+// --------- AI 人物图：候选按会话隔离，正式图片保存在书内 ---------
 /** AI 场景图存储目录（按选中文本生成，直接落盘） */
 const SCENE_IMAGES_DIR = 'scene_images'
 
-ipcMain.handle('tongyiwanxiang:generate-character-image', async (_, options) => {
-  try {
-    await tongyiwanxiangService.initApiKey((key) => store.get(key))
-    const { prompt, size, bookName, negativePrompt = '' } = options || {}
-    if (!prompt || !size || !bookName) {
+const characterImageService = new CharacterImageService({
+  snapshotService: bookSnapshotService,
+  generateImageBuffer: generateConfiguredImage
+})
+for (const [channel, operation] of [
+  ['tongyiwanxiang:generate-character-image', 'generate'],
+  ['tongyiwanxiang:confirm-character-image', 'confirm'],
+  ['tongyiwanxiang:discard-ai-character-images', 'discard']
+]) {
+  ipcMain.handle(channel, async (_, options) => {
+    try {
+      return await characterImageService[operation](options || {})
+    } catch (error) {
       return {
         success: false,
-        message: '缺少参数：prompt、size、bookName 为必填'
+        code: error?.code || 'CHARACTER_IMAGE_FAILED',
+        message: error?.message || '人物图片操作失败'
       }
     }
-    const booksDir = store.get('booksDir')
-    if (!booksDir || !fs.existsSync(booksDir)) {
-      return { success: false, message: '未设置或无效的书籍目录' }
-    }
-    const safeName = String(bookName).replace(/[\\/:*?"<>|]/g, '_')
-    const bookPath = join(booksDir, safeName)
-    const tempDir = join(bookPath, AI_CHARACTER_TEMP_DIR)
-    fs.mkdirSync(tempDir, { recursive: true })
-
-    const buf = await generateImageBufferByProvider(store, {
-      imageProvider: options?.imageProvider,
-      prompt,
-      size,
-      negativePrompt
-    })
-    const existing = fs.readdirSync(tempDir).filter((f) => /^ai_char\d+\.png$/i.test(f))
-    const nextNum =
-      existing.length === 0
-        ? 1
-        : Math.max(
-            ...existing.map((f) => parseInt(f.replace(/^ai_char(\d+)\.png$/i, '$1'), 10) || 0)
-          ) + 1
-    const fileName = `ai_char${nextNum}.png`
-    const imagePath = join(tempDir, fileName)
-    fs.writeFileSync(imagePath, buf)
-    return { success: true, localPath: imagePath }
-  } catch (error) {
-    console.error('通义万相生成人物图失败:', error)
-    return {
-      success: false,
-      message: error?.message || '生成人物图失败'
-    }
-  }
-})
-
-// 确认使用某张人物图：复制到书籍 character_images 目录并返回路径（追加到人物图列表）
-ipcMain.handle('tongyiwanxiang:confirm-character-image', async (_, options) => {
-  try {
-    const { bookName, chosenPath } = options || {}
-    const booksDir = store.get('booksDir')
-    if (!booksDir || !bookName || !chosenPath) {
-      return { success: false, message: '参数错误' }
-    }
-    const safeName = String(bookName).replace(/[\\/:*?"<>|]/g, '_')
-    const bookPath = join(booksDir, safeName)
-    const tempDir = join(bookPath, AI_CHARACTER_TEMP_DIR)
-    if (!fs.existsSync(chosenPath) || !chosenPath.startsWith(tempDir)) {
-      return { success: false, message: '所选人物图文件无效' }
-    }
-    const imagesDir = join(bookPath, CHARACTER_IMAGES_DIR)
-    fs.mkdirSync(imagesDir, { recursive: true })
-    const fileName = `img_${Date.now()}.png`
-    const finalPath = join(imagesDir, fileName)
-    fs.copyFileSync(chosenPath, finalPath)
-    return { success: true, localPath: finalPath }
-  } catch (error) {
-    console.error('确认人物图失败:', error)
-    return { success: false, message: error?.message || '确认失败' }
-  }
-})
-
-// 关闭人物图抽屉未确认时：删除本次会话生成的临时人物图
-ipcMain.handle('tongyiwanxiang:discard-ai-character-images', async (_, options) => {
-  try {
-    const { bookName } = options || {}
-    if (!bookName) return { success: true }
-    const booksDir = store.get('booksDir')
-    if (!booksDir || !fs.existsSync(booksDir)) return { success: true }
-    const safeName = String(bookName).replace(/[\\/:*?"<>|]/g, '_')
-    const tempDir = join(booksDir, safeName, AI_CHARACTER_TEMP_DIR)
-    if (fs.existsSync(tempDir)) {
-      const files = fs.readdirSync(tempDir)
-      for (const f of files) {
-        fs.unlinkSync(join(tempDir, f))
-      }
-      fs.rmdirSync(tempDir)
-    }
-    return { success: true }
-  } catch (error) {
-    console.error('丢弃人物图临时文件失败:', error)
-    return { success: true }
-  }
-})
+  })
+}
 
 // --------- 通义万相 AI 场景图（编辑器选中文本）---------
 ipcMain.handle('tongyiwanxiang:generate-scene-image', async (_, options) => {
   try {
-    await tongyiwanxiangService.initApiKey((key) => store.get(key))
     const { prompt, size, bookName, negativePrompt = '' } = options || {}
     if (!prompt || !size || !bookName) {
       return {
@@ -4124,12 +3900,11 @@ ipcMain.handle('tongyiwanxiang:generate-scene-image', async (_, options) => {
     if (!booksDir || !fs.existsSync(booksDir)) {
       return { success: false, message: '未设置或无效的书籍目录' }
     }
-    const safeName = String(bookName).replace(/[\\/:*?"<>|]/g, '_')
-    const bookPath = join(booksDir, safeName)
+    const { bookPath } = resolveBookDirectoryForCreate(bookName, { sanitize: true })
     const sceneDir = join(bookPath, SCENE_IMAGES_DIR)
     fs.mkdirSync(sceneDir, { recursive: true })
 
-    const buf = await generateImageBufferByProvider(store, {
+    const buf = await generateConfiguredImage({
       imageProvider: options?.imageProvider,
       prompt,
       size,

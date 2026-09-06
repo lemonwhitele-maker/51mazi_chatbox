@@ -6,14 +6,13 @@
         v-for="item in toolbarItems"
         :key="item.key"
         :content="item.label"
-        placement="left"
+        placement="right"
         :disabled="!props.compact"
       >
         <el-button
           class="tool-btn"
           :class="{
-            'tool-btn--outline-active':
-              props.compact && props.outlineEmbedActive && item.key === 'outline'
+            'tool-btn--active': activeToolKey === item.key
           }"
           @click="item.onClick"
         >
@@ -44,15 +43,34 @@ const props = defineProps({
   compact: {
     type: Boolean,
     default: false
-  },
-  /** 小屏嵌入大纲时：大纲管理图标显示选中态 */
-  outlineEmbedActive: {
-    type: Boolean,
-    default: false
   }
 })
 
+const routeToolKeys = {
+  Editor: 'editor',
+  OutlineManager: 'outline',
+  QuickNotes: 'quick-notes',
+  SettingManager: 'setting',
+  MapList: 'map',
+  MapDesign: 'map',
+  Dictionary: 'dictionary',
+  OrganizationList: 'organization',
+  OrganizationDesign: 'organization',
+  CharacterProfile: 'character',
+  RelationshipList: 'relationship',
+  RelationshipDesign: 'relationship',
+  Timeline: 'timeline',
+  EventsSequence: 'events-sequence'
+}
+
+const activeToolKey = computed(() => routeToolKeys[route.name] || '')
+
 // 工具栏功能处理函数
+const handleEditor = () => {
+  const bookName = route.query.name
+  router.push({ path: '/editor', query: { name: bookName } })
+}
+
 const handleRandomName = () => {
   randomNameRef.value.open()
 }
@@ -106,12 +124,13 @@ const handleOrganization = () => {
 }
 
 const handleOutlineManager = () => {
-  // 小屏嵌入大纲已展开且图标为选中态时，不再跳转独立大纲页（大屏请用大纲内容区全屏按钮）
-  if (props.compact && props.outlineEmbedActive) {
-    return
-  }
   const bookName = route.query.name
   router.push({ path: '/outline-manager', query: { name: bookName } })
+}
+
+const handleQuickNotes = () => {
+  const bookName = route.query.name
+  router.push({ path: '/quick-notes', query: { name: bookName } })
 }
 
 const handleBannedWords = () => {
@@ -119,7 +138,24 @@ const handleBannedWords = () => {
 }
 
 const toolbarItems = computed(() => [
-  { key: 'outline', icon: 'resource', label: t('editorToolbar.outline'), onClick: handleOutlineManager },
+  {
+    key: 'editor',
+    icon: 'outline',
+    label: t('editorToolbar.writingArea'),
+    onClick: handleEditor
+  },
+  {
+    key: 'outline',
+    icon: 'resource',
+    label: t('editorToolbar.outline'),
+    onClick: handleOutlineManager
+  },
+  {
+    key: 'quick-notes',
+    icon: 'pencil',
+    label: t('editorToolbar.quickNotes'),
+    onClick: handleQuickNotes
+  },
   {
     key: 'setting',
     icon: 'config',
@@ -163,7 +199,12 @@ const toolbarItems = computed(() => [
     label: t('editorToolbar.relationship'),
     onClick: handleRelationshipMap
   },
-  { key: 'timeline', icon: 'timeline', label: t('editorToolbar.timeline'), onClick: handleTimeline },
+  {
+    key: 'timeline',
+    icon: 'timeline',
+    label: t('editorToolbar.timeline'),
+    onClick: handleTimeline
+  },
   {
     key: 'events-sequence',
     icon: 'gantt',
@@ -211,6 +252,11 @@ const toolbarItems = computed(() => [
       &:hover {
         color: var(--el-color-primary);
       }
+      &.tool-btn--active {
+        border-color: var(--el-color-primary);
+        background: color-mix(in srgb, var(--el-color-primary) 12%, var(--bg-primary));
+        color: var(--el-color-primary);
+      }
       span {
         margin-left: 6px;
         line-height: 1.2;
@@ -236,18 +282,6 @@ const toolbarItems = computed(() => [
         padding: 0;
         justify-content: center;
         align-items: center;
-      }
-
-      .tool-btn.tool-btn--outline-active {
-        border-color: var(--el-color-primary);
-        background: color-mix(in srgb, var(--el-color-primary) 18%, var(--bg-primary));
-        color: var(--el-color-primary);
-      }
-
-      .tool-btn.tool-btn--outline-active:hover {
-        border-color: var(--el-color-primary);
-        background: color-mix(in srgb, var(--el-color-primary) 26%, var(--bg-primary));
-        color: var(--el-color-primary);
       }
     }
   }

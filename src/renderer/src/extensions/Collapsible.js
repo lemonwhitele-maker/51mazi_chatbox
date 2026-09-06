@@ -16,7 +16,7 @@ export const Collapsible = Node.create({
       label: {
         default: '折叠段落',
         parseHTML: (element) => element.querySelector('summary')?.innerText || '折叠段落',
-        renderHTML: (attributes) => ({})
+        renderHTML: () => ({})
       }
     }
   },

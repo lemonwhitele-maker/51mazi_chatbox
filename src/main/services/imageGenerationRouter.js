@@ -22,12 +22,13 @@ export const IMAGE_PROVIDERS = [
  * @returns {Promise<Buffer>}
  */
 export async function generateImageBuffer(store, options) {
+  const configStore = store.bindApiStore?.() || store
   const { imageProvider = IMAGE_PROVIDER_TONGYI, prompt, size, negativePrompt = '' } =
     options || {}
 
   if (imageProvider === IMAGE_PROVIDER_TONGYI) {
-    await tongyiwanxiangService.initApiKey((key) => store.get(key))
     const imageUrl = await tongyiwanxiangService.generateCover({
+      apiKey: configStore.get('tongyiwanxiang.apiKey', ''),
       prompt,
       size,
       negativePrompt
@@ -40,7 +41,7 @@ export async function generateImageBuffer(store, options) {
   }
 
   if (imageProvider === IMAGE_PROVIDER_GEMINI) {
-    const apiKey = store.get('gemini.apiKey', '')
+    const apiKey = configStore.get('gemini.apiKey', '')
     return geminiImagen.generateImageBuffer({
       apiKey,
       prompt,
@@ -50,9 +51,9 @@ export async function generateImageBuffer(store, options) {
   }
 
   if (imageProvider === IMAGE_PROVIDER_DOUBAO) {
-    const apiKey = store.get('doubao.apiKey', '')
-    const model = store.get('doubao.model', '')
-    const baseUrl = store.get('doubao.baseUrl', '') || undefined
+    const apiKey = configStore.get('doubao.apiKey', '')
+    const model = configStore.get('doubao.model', '')
+    const baseUrl = configStore.get('doubao.baseUrl', '') || undefined
     return doubaoImage.generateImageBuffer({
       apiKey,
       model,

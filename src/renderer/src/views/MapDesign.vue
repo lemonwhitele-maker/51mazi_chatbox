@@ -1228,8 +1228,9 @@ onUnmounted(() => {
 
 <style lang="scss" scoped>
 .map-design {
-  width: 100vw;
-  height: 100vh;
+  position: relative;
+  width: 100%;
+  height: 100%;
   display: flex;
   flex-direction: column;
   background-color: #f3f3f3;
@@ -1237,7 +1238,7 @@ onUnmounted(() => {
   overflow: hidden;
 
   .back-button-container {
-    position: fixed;
+    position: absolute;
     top: 8px;
     left: 20px;
     z-index: 1000;
@@ -1327,7 +1328,7 @@ onUnmounted(() => {
 
 // 颜色选择器样式
 .color-picker-container {
-  position: fixed;
+  position: absolute;
   top: 8px;
   right: 20px;
   z-index: 1000;
