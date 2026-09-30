@@ -74,6 +74,11 @@ export class DomainToolRegistry {
   async execute(name, context, args, signal) {
     const tool = this.get(name)
     if (!tool) return errorResult(new HarnessError('TOOL_NOT_ALLOWED', `不允许调用工具：${name}`), 'TOOL_NOT_ALLOWED')
+    try {
+      context?.assertBookScope?.()
+    } catch (error) {
+      return tool ? this.withMeta(tool, errorResult(error, 'BOOK_SCOPE_MISMATCH')) : errorResult(error, 'BOOK_SCOPE_MISMATCH')
+    }
     let normalizedArgs = args
     try {
       if (typeof tool.normalizeArguments === 'function') {

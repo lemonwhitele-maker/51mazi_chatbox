@@ -53,13 +53,14 @@
 </template>
 
 <script setup>
+import { traceSave } from '@renderer/service/saveDiagnostics'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import EditorToolbar from '@renderer/components/Editor/EditorToolbar.vue'
 import HarnessChatSidebar from '@renderer/components/Agent/HarnessChatSidebar.vue'
-import { normalizeHarnessWorkspaceContext } from '@renderer/service/harnessClient'
+import harnessClient, { normalizeHarnessWorkspaceContext } from '@renderer/service/harnessClient'
 
 defineOptions({ name: 'BookWorkspace' })
 
@@ -78,6 +79,7 @@ const functionAreaRef = ref(null)
 const agentSidebarRef = ref(null)
 const agentSidebarCollapsed = ref(false)
 const layoutRatio = ref(50)
+let editorStateTimer = 0
 
 const cliBookName = (() => {
   if (!window.process?.argv) return ''
@@ -163,6 +165,19 @@ function getActiveContext(mode = 'selection') {
   })
 }
 
+function scheduleEditorStateReport() {
+  window.clearTimeout(editorStateTimer)
+  editorStateTimer = window.setTimeout(async () => {
+    if (!bookName.value) return
+    try {
+      await harnessClient.bindBook(bookName.value)
+      await harnessClient.updateEditorState(bookName.value, getActiveContext('document'))
+    } catch {
+      // 工作区尚未完成书籍绑定时，确认按钮会再次同步状态。
+    }
+  }, 120)
+}
+
 function handleAgentDiffProposed(diff) {
   const handled = functionAreaRef.value?.proposeAgentDiff?.(diff)
   if (!handled && diff) {
@@ -192,8 +207,14 @@ function clearBodyWriteProposalPreview(proposalId) {
   functionAreaRef.value?.clearBodyWriteProposalPreview?.(proposalId)
 }
 
-function applyBodyWriteProposalResult(payload) {
-  functionAreaRef.value?.applyBodyWriteProposalResult?.(payload)
+async function applyBodyWriteProposalResult(payload) {
+  traceSave('proposal.forward', { proposalId: payload?.proposal?.proposalId, hasEditor: !!functionAreaRef.value?.applyBodyWriteProposalResult })
+  try {
+    await functionAreaRef.value?.applyBodyWriteProposalResult?.(payload)
+  } catch (error) {
+    traceSave('proposal.sync-failed', { proposalId: payload?.proposal?.proposalId, reason: String(error?.message || error) })
+    throw error
+  }
 }
 
 async function navigateAgentReference(reference) {
@@ -228,6 +249,20 @@ async function navigateAgentReference(reference) {
 
 watch(bookName, () => readLayout(), { immediate: true })
 watch(
+  () => {
+    const context = getActiveContext('document')
+    return {
+      bookName: bookName.value,
+      currentModule: context.currentModule,
+      currentDocumentId: context.currentDocumentId,
+      hasUnsavedChanges: context.hasUnsavedChanges,
+      metadata: context.metadata
+    }
+  },
+  scheduleEditorStateReport,
+  { deep: true, immediate: true }
+)
+watch(
   () => route.fullPath,
   () => {
     document.title = bookName.value ? `${bookName.value} - 51码字` : '51码字'
@@ -240,6 +275,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  window.clearTimeout(editorStateTimer)
   document.body.classList.remove('is-resizing-workspace')
 })
 </script>

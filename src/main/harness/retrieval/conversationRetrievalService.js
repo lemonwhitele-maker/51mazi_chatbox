@@ -324,6 +324,30 @@ export class ConversationRetrievalService {
     }
   }
 
+  async readConversationDocument(bookKey, conversationId) {
+    const index = await this.ensureIndex(bookKey)
+    const chunks = index.chunks
+      .filter((chunk) => chunk.targetId === String(conversationId || ''))
+      .sort((left, right) => String(left.savedAt || '').localeCompare(String(right.savedAt || '')))
+    if (!chunks.length) {
+      const error = new Error('历史对话不存在或不属于当前书籍')
+      error.code = 'DOCUMENT_NOT_FOUND'
+      throw error
+    }
+    const text = chunks.map((chunk) => chunk.text).join('\n\n---\n\n')
+    const contentHash = hashText(text)
+    return {
+      sourceType: 'conversation',
+      targetId: String(conversationId),
+      title: chunks[0].metadata.conversationTitle || '历史对话',
+      text,
+      contentHash,
+      authorityStatus: 'unconfirmed_conversation',
+      savedAt: chunks.at(-1)?.savedAt || null,
+      reference: `conversation:${encodeURIComponent(String(conversationId))}@${contentHash}`
+    }
+  }
+
   async readConversationSource(bookKey, reference, options = {}) {
     const parsed = parseConversationReference(reference)
     const index = await this.ensureIndex(bookKey)

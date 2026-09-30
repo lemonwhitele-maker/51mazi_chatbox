@@ -19,7 +19,7 @@
         />
         <el-form
           label-width="120px"
-          :disabled="!booksDirReady || loadingConfig"
+          :disabled="!booksDirReady || anyLoading"
           @submit.prevent="handleSave"
         >
           <!-- Agent API：可直连兼容模型，也可继续使用 Codex 反代 -->
@@ -40,8 +40,25 @@
                 }}</el-radio>
               </el-radio-group>
             </el-form-item>
+            <el-form-item v-if="agentDefaultRuntime === 'agent-api'" label="默认厂商">
+              <el-select v-model="agentDefaultProviderId" filterable>
+                <el-option
+                  v-for="provider in agentProviderCatalog"
+                  :key="provider.id"
+                  :label="provider.name"
+                  :value="provider.id"
+                />
+              </el-select>
+              <div class="form-tip">
+                仅用于对话选择“跟随 AI 设置默认”时。编辑其他厂商不会改变默认厂商。
+              </div>
+            </el-form-item>
             <el-form-item :label="t('aiSettings.agentApiProvider')">
-              <el-select v-model="agentProviderId" filterable @change="handleAgentProviderChange">
+              <el-select
+                :model-value="agentProviderId"
+                filterable
+                @change="handleAgentProviderChange"
+              >
                 <el-option
                   v-for="provider in agentProviderCatalog"
                   :key="provider.id"
@@ -52,6 +69,9 @@
             </el-form-item>
             <el-form-item :label="t('aiSettings.agentApiBaseUrl')">
               <el-input v-model="agentBaseUrl" placeholder="https://api.example.com/v1" clearable />
+              <div v-if="cloudProviderHint(agentProviderId)" class="form-tip">
+                {{ cloudProviderHint(agentProviderId) }}
+              </div>
             </el-form-item>
             <el-form-item :label="t('aiSettings.agentApiModel')">
               <el-input
@@ -68,6 +88,10 @@
                 :placeholder="agentApiKeyOptional ? t('aiSettings.agentApiKeyOptional') : 'sk-...'"
                 clearable
               />
+            </el-form-item>
+            <el-form-item v-if="agentProviderId === 'deepseek'" label="默认思考模式">
+              <el-switch v-model="agentThinkingEnabled" />
+              <div class="form-tip">对话中可覆盖此默认值；具体强度选项取决于所配置模型。</div>
             </el-form-item>
             <el-form-item>
               <el-button
@@ -118,6 +142,12 @@
             <el-form-item :label="t('aiSettings.functionApiProvider')">
               <el-select v-model="functionApiProvider" @change="handleFunctionProviderChange">
                 <el-option :label="t('aiSettings.functionApiProviderDeepseek')" value="deepseek" />
+                <el-option
+                  v-for="provider in CLOUD_AI_PROVIDERS"
+                  :key="provider.id"
+                  :label="provider.name"
+                  :value="provider.id"
+                />
                 <el-option :label="t('aiSettings.functionApiProviderCustom')" value="custom" />
               </el-select>
             </el-form-item>
@@ -131,7 +161,7 @@
               />
             </el-form-item>
             <el-form-item
-              v-if="functionApiProvider === 'custom'"
+              v-if="functionApiProvider !== 'deepseek'"
               :label="t('aiSettings.functionApiBaseUrl')"
             >
               <el-input
@@ -139,6 +169,9 @@
                 :placeholder="t('aiSettings.functionApiBaseUrlPlaceholder')"
                 clearable
               />
+              <div v-if="cloudProviderHint(functionApiProvider)" class="form-tip">
+                {{ cloudProviderHint(functionApiProvider) }}
+              </div>
             </el-form-item>
             <el-form-item :label="t('aiSettings.functionApiModel')">
               <el-input
@@ -363,6 +396,7 @@
 import { ref, computed, onBeforeUnmount } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
+import { CLOUD_AI_PROVIDERS } from '../../../shared/cloudAiProviders.js'
 import {
   getTongyiwanxiangApiKey,
   setTongyiwanxiangApiKey,
@@ -393,6 +427,11 @@ const loadingConfig = ref(false)
 let configGeneration = 0
 let loadGeneration = 0
 const { t } = useI18n()
+function cloudProviderHint(providerId) {
+  return CLOUD_AI_PROVIDERS.some((provider) => provider.id === providerId)
+    ? t(`aiSettings.${providerId}ApiHint`)
+    : ''
+}
 const apiKeyTongyi = ref('')
 const apiKeyGemini = ref('')
 const doubaoApiKey = ref('')
@@ -408,6 +447,7 @@ const functionApiValidationMessage = ref('')
 const functionApiValidatedAt = ref(null)
 const agentDefaultRuntime = ref('codex-app-server')
 const agentProviderId = ref('deepseek')
+const agentDefaultProviderId = ref('deepseek')
 const agentProviderCatalog = ref([])
 const agentProviderConfigs = ref({})
 const agentBaseUrl = ref('https://api.deepseek.com')
@@ -479,6 +519,7 @@ async function loadAllKeys() {
     if (agentRes) {
       agentDefaultRuntime.value = agentRes.defaultRuntime || 'codex-app-server'
       agentProviderId.value = agentRes.selectedProvider || 'deepseek'
+      agentDefaultProviderId.value = agentProviderId.value
       agentProviderCatalog.value = Array.isArray(agentRes.catalog) ? agentRes.catalog : []
       agentProviderConfigs.value = agentRes.providers || {}
       applyAgentProvider(agentProviderId.value)
@@ -495,10 +536,9 @@ async function loadAllKeys() {
       functionApiProvider.value = functionRes.provider || 'deepseek'
       functionApiKey.value = functionRes.apiKey || ''
       functionApiBaseUrl.value =
-        functionRes.baseUrl ||
-        (functionApiProvider.value === 'deepseek' ? 'https://api.deepseek.com' : '')
+        functionRes.baseUrl || functionProviderDefaults(functionApiProvider.value).baseUrl
       functionApiModel.value =
-        functionRes.model || (functionApiProvider.value === 'deepseek' ? 'deepseek-chat' : '')
+        functionRes.model || functionProviderDefaults(functionApiProvider.value).model
       functionApiStatus.value =
         functionRes.lastValidationStatus === 'success'
           ? true
@@ -520,9 +560,28 @@ let saveTimer = null
 
 async function handleSave() {
   if (saving.value || !booksDirReady.value || loadingConfig.value) return
+  rememberAgentProvider()
+  if (agentDefaultRuntime.value === 'agent-api') {
+    const provider = agentProviderConfigs.value[agentDefaultProviderId.value]
+    const defaults = agentProviderCatalog.value.find(
+      (item) => item.id === agentDefaultProviderId.value
+    )
+    if (
+      !provider?.baseUrl?.trim() ||
+      !provider?.model?.trim() ||
+      (!defaults?.apiKeyOptional && !provider?.apiKey?.trim())
+    ) {
+      ElMessage.warning('请先补全默认厂商的 API 地址、模型和密钥，或选择其他默认厂商')
+      return
+    }
+  }
   const generation = configGeneration
   const payloads = {
-    agent: agentApiPayload(),
+    agent: {
+      defaultRuntime: agentDefaultRuntime.value,
+      selectedProvider: agentDefaultProviderId.value,
+      providers: JSON.parse(JSON.stringify(agentProviderConfigs.value))
+    },
     tongyi: apiKeyTongyi.value.trim(),
     gemini: apiKeyGemini.value.trim(),
     doubao: {
@@ -574,8 +633,6 @@ async function handleSave() {
 function agentApiPayload() {
   return {
     providerId: agentProviderId.value,
-    selectedProvider: agentProviderId.value,
-    defaultRuntime: agentDefaultRuntime.value,
     baseUrl: agentBaseUrl.value.trim(),
     model: agentModel.value.trim(),
     apiKey: agentApiKey.value.trim(),
@@ -586,13 +643,25 @@ function agentApiPayload() {
 function applyAgentProvider(providerId) {
   const saved = agentProviderConfigs.value?.[providerId] || {}
   const defaults = agentProviderCatalog.value.find((item) => item.id === providerId) || {}
-  agentBaseUrl.value = saved.baseUrl || defaults.baseUrl || ''
-  agentModel.value = saved.model || defaults.model || ''
+  agentBaseUrl.value = saved.baseUrl ?? defaults.baseUrl ?? ''
+  agentModel.value = saved.model ?? defaults.model ?? ''
   agentApiKey.value = saved.apiKey || ''
   agentThinkingEnabled.value = saved.thinkingEnabled !== false
 }
 
+function rememberAgentProvider() {
+  agentProviderConfigs.value = {
+    ...agentProviderConfigs.value,
+    [agentProviderId.value]: {
+      ...agentProviderConfigs.value[agentProviderId.value],
+      ...agentApiPayload()
+    }
+  }
+}
+
 function handleAgentProviderChange(providerId) {
+  rememberAgentProvider()
+  agentProviderId.value = providerId
   agentApiStatus.value = null
   agentApiValidationMessage.value = ''
   applyAgentProvider(providerId)
@@ -616,10 +685,6 @@ async function handleValidateAgentApi() {
     if (generation !== configGeneration) return
     agentApiStatus.value = Boolean(result?.isValid)
     agentApiValidationMessage.value = result?.message || ''
-    if (result?.config) {
-      agentProviderConfigs.value = result.config.providers || agentProviderConfigs.value
-      window.dispatchEvent(new CustomEvent('agent-api-config-changed'))
-    }
     if (result?.isValid) ElMessage.success(t('aiSettings.agentApiValidateSuccess'))
     else ElMessage.error(result?.message || t('aiSettings.agentApiValidateFailed'))
   } catch (error) {
@@ -643,17 +708,21 @@ function functionApiPayload() {
   }
 }
 
+function functionProviderDefaults(provider) {
+  if (provider === 'deepseek') {
+    return { baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' }
+  }
+  return CLOUD_AI_PROVIDERS.find((item) => item.id === provider) || { baseUrl: '', model: '' }
+}
+
 function handleFunctionProviderChange(provider) {
   functionApiStatus.value = null
   functionApiValidationMessage.value = ''
   functionApiValidatedAt.value = null
-  if (provider === 'deepseek') {
-    functionApiBaseUrl.value = 'https://api.deepseek.com'
-    functionApiModel.value = 'deepseek-chat'
-  } else {
-    if (functionApiBaseUrl.value === 'https://api.deepseek.com') functionApiBaseUrl.value = ''
-    if (functionApiModel.value === 'deepseek-chat') functionApiModel.value = ''
-  }
+  const defaults = functionProviderDefaults(provider)
+  functionApiBaseUrl.value = defaults.baseUrl
+  functionApiModel.value = defaults.model
+  functionApiKey.value = ''
 }
 
 function formatValidationTime(value) {
@@ -668,7 +737,7 @@ async function handleValidateFunctionApi() {
     ElMessage.warning(t('aiSettings.functionApiPleaseComplete'))
     return
   }
-  if (functionApiProvider.value === 'custom' && !functionApiBaseUrl.value.trim()) {
+  if (!functionApiBaseUrl.value.trim()) {
     ElMessage.warning(t('aiSettings.functionApiPleaseComplete'))
     return
   }

@@ -114,7 +114,7 @@ function getAgentContext() {
     currentDocumentId: 'quick-notes',
     currentEntityId: 'quick-notes',
     currentDocumentSavedHash: savedHash.value,
-    hasUnsavedChanges: saveStatus.value === 'dirty',
+    hasUnsavedChanges: saveStatus.value === 'dirty' || saving.value,
     metadata: { file_type: 'note', source_file: '.51mazi/notes/quick-notes.md' }
   }
 }

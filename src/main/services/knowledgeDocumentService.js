@@ -5,6 +5,7 @@ import yaml from 'js-yaml'
 import { safeSegment } from './bookSavedSnapshotService.js'
 import { writeFileAtomically } from './chapterWriteService.js'
 import { resolveCharacterImagePath } from './characterImageService.js'
+import { KNOWLEDGE_SECTIONS_TOTAL_MAX_LENGTH } from './knowledgeDocumentContract.js'
 import {
   parseKnowledgeMarkdown,
   replaceKnowledgeSection,
@@ -256,9 +257,27 @@ export class KnowledgeDocumentService {
         sortKeys: false
       })
       .trimEnd()
-    const sections = config.sections
+    const suppliedSections = options.sections && typeof options.sections === 'object'
+      ? options.sections
+      : {}
+    const configuredKeys = new Set(config.sections.map(([key]) => key))
+    const allSections = [
+      ...config.sections,
+      ...Object.keys(suppliedSections)
+        .filter((key) => !configuredKeys.has(key))
+        .map((key) => [key, key])
+    ]
+    const totalSectionLength = Object.values(suppliedSections)
+      .reduce((total, content) => total + String(content ?? '').length, 0)
+    if (totalSectionLength > KNOWLEDGE_SECTIONS_TOTAL_MAX_LENGTH) {
+      throw new KnowledgeDocumentError(
+        'KNOWLEDGE_SECTIONS_TOTAL_TOO_LONG',
+        `新建文档 sections 正文总长度为 ${totalSectionLength}，上限为 ${KNOWLEDGE_SECTIONS_TOTAL_MAX_LENGTH} 个 UTF-16 code unit`
+      )
+    }
+    const sections = allSections
       .map(([key, heading]) => {
-        const content = String(options.sections?.[key] || '').trim()
+        const content = String(suppliedSections[key] || '').trim()
         return `### ${heading} <!-- 51:section=${key} -->\n${content ? `\n${content}\n` : ''}`
       })
       .join('\n')

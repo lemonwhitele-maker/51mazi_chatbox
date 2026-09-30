@@ -110,6 +110,8 @@ function createEditor() {
     onUpdate: ({ editor }) => {
       // 章节模式：保存纯文本格式
       const content = serializeChapterEditor(editor)
+      // Formatting/highlight transactions do not change the saved chapter text.
+      if (content === props.editorStore.content) return
 
       // 如果正在进行输入法输入（composition），不更新字数统计
       if (!props.isComposing) {
@@ -138,6 +140,7 @@ function createEditor() {
  * 否则 Ctrl+Z 可能撤销到上一章内容，造成误以为复制了上一章的问题。
  */
 function setChapterContent(editor, content) {
+  if (saveTimer.value) clearTimeout(saveTimer.value)
   if (!editor || !editor.view) return
   const htmlContent = content ? plainTextToHtml(content) : ''
   const state = editor.state
@@ -146,6 +149,7 @@ function setChapterContent(editor, content) {
   const tr = state.tr
     .replaceWith(0, state.doc.content.size, document.content)
     .setMeta('addToHistory', false)
+    .setMeta('preventUpdate', true)
   editor.view.dispatch(tr)
 }
 

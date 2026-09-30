@@ -177,6 +177,18 @@ export class BookSavedSnapshotService {
     }
     const target = resolve(rootPath, normalized)
     if (!isInside(rootPath, target)) throw new Error(`${label} 路径越出书籍范围`)
+    if (!fs.existsSync(rootPath) || fs.lstatSync(rootPath).isSymbolicLink()) {
+      throw new Error(`${label} 路径包含链接或不存在的根目录`)
+    }
+    const relativeSegments = relative(resolve(rootPath), target).split(sep).filter(Boolean)
+    let cursor = resolve(rootPath)
+    for (const segment of relativeSegments) {
+      cursor = join(cursor, segment)
+      if (!fs.existsSync(cursor)) break
+      const direct = fs.lstatSync(cursor)
+      if (direct.isSymbolicLink()) throw new Error(`${label} 路径包含符号链接或 junction`)
+      if (direct.isFile() && Number(direct.nlink) > 1) throw new Error(`${label} 路径不能是硬链接文件`)
+    }
     const realTarget = fs.existsSync(target) ? fs.realpathSync(target) : target
     if (!isInside(rootPath, realTarget)) throw new Error(`${label} 路径越出书籍范围`)
     return realTarget

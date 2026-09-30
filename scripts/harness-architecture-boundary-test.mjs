@@ -4,7 +4,7 @@ import os from 'node:os'
 import { join, relative } from 'node:path'
 import HarnessStore from '../src/main/harness/store/harnessStore.js'
 import DomainToolRegistry from '../src/main/harness/tools/domainToolRegistry.js'
-import { createBookReadTools } from '../src/main/harness/tools/bookReadTools.js'
+import { createDocumentTools } from '../src/main/harness/tools/documentTools.js'
 
 const root = process.cwd()
 const sourceRoot = join(root, 'src')
@@ -78,9 +78,9 @@ for (const file of allFiles) {
 assert.throws(() => assertCoreBoundary('accidental thread/start'), /Provider 协议字段/)
 
 const registry = new DomainToolRegistry()
-createBookReadTools({
-  retrievalService: {},
-  conversationRetrievalService: {}
+createDocumentTools({
+  documentService: { read: async () => ({}) },
+  proposalService: { create: async () => ({}), write: async () => ({}), edit: async () => ({}) }
 }).forEach((tool) => registry.register(tool))
 assertRuntimeToolBoundary(registry.listDefinitions())
 assert.throws(

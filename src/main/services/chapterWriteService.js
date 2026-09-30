@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import { logSaveDiagnostic, saveErrorDetails } from './saveDiagnostics.js'
 import { randomUUID } from 'node:crypto'
 import { basename, dirname, join } from 'node:path'
 import { safeSegment } from './bookSavedSnapshotService.js'
@@ -17,6 +18,19 @@ export class ChapterWriteError extends Error {
 
 export function serializeChapterText(value) {
   return String(value ?? '')
+}
+
+function chapterBytesAndText(value) {
+  const bytes = Buffer.isBuffer(value)
+    ? Buffer.from(value)
+    : Buffer.from(serializeChapterText(value), 'utf8')
+  let text
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  } catch {
+    throw new ChapterWriteError('CHAPTER_ENCODING_INVALID', '正文必须是有效的 UTF-8 纯文本')
+  }
+  return { bytes, text }
 }
 
 export function chapterTargetId(volumeName, chapterName) {
@@ -105,6 +119,7 @@ export class ChapterWriteService {
     this.snapshotService = snapshotService
     this.onCommitted = typeof onCommitted === 'function' ? onCommitted : null
     this.atomicWriter = atomicWriter
+    this.sandboxService = null
     this.writeQueues = new Map()
   }
 
@@ -130,10 +145,13 @@ export class ChapterWriteService {
     const bookKey = safeSegment(bookName, '书籍名称')
 
     return this.enqueue(`${bookKey}:${targetId}`, async () => {
+      const scope = this.sandboxService?.bindBook(bookKey, { senderId: 'chapter-write', frameId: 'internal' })
+      if (scope) this.sandboxService.resolveReadable(scope, `正文/${targetId}`)
       const before = this.snapshotService.readChapterSnapshot(bookKey, targetId)
       const previousHash = before.rawHash
       const normalizedExpectedHash = String(expectedHash || '').trim()
 
+      logSaveDiagnostic('chapter.version-check', { bookName: bookKey, targetId, expectedHash: normalizedExpectedHash, currentHash: previousHash })
       if (normalizedExpectedHash && normalizedExpectedHash !== previousHash) {
         throw new ChapterWriteError(
           'CHAPTER_VERSION_CONFLICT',
@@ -142,13 +160,18 @@ export class ChapterWriteService {
         )
       }
 
-      const nextContent = serializeChapterText(content)
+      const next = chapterBytesAndText(content)
+      const nextContent = next.text
       const previousBytes = await fs.promises.readFile(before.metadata.filePath)
 
+      let stage = 'atomic-write'
       try {
-        const writeResult = await this.atomicWriter(before.metadata.filePath, nextContent)
+        if (scope) this.sandboxService.assertTrustedAbsolute(scope, before.metadata.filePath)
+        const writeResult = await this.atomicWriter(before.metadata.filePath, next.bytes)
+        stage = 'read-after-write'
         const after = this.snapshotService.readChapterSnapshot(bookKey, targetId)
 
+        stage = 'post-write-stats-and-metadata'
         if (this.onCommitted) {
           try {
             await this.onCommitted({
@@ -161,6 +184,8 @@ export class ChapterWriteService {
               contentHash: after.rawHash
             })
           } catch (error) {
+            logSaveDiagnostic('chapter.post-write-failed', { bookName: bookKey, targetId, error: saveErrorDetails(error) })
+            stage = 'rollback'
             await this.atomicWriter(before.metadata.filePath, previousBytes)
             throw new ChapterWriteError(
               'CHAPTER_POST_WRITE_FAILED',
@@ -170,6 +195,7 @@ export class ChapterWriteService {
           }
         }
 
+        logSaveDiagnostic('chapter.committed', { bookName: bookKey, targetId, previousHash, contentHash: after.rawHash })
         return {
           previousHash,
           contentHash: after.rawHash,
@@ -177,6 +203,7 @@ export class ChapterWriteService {
           bytesWritten: writeResult?.bytesWritten ?? Buffer.byteLength(nextContent, 'utf8')
         }
       } catch (error) {
+        logSaveDiagnostic('chapter.failed', { bookName: bookKey, targetId, stage, error: saveErrorDetails(error) })
         if (error instanceof ChapterWriteError) throw error
         throw new ChapterWriteError('CHAPTER_WRITE_FAILED', '章节保存失败，原正文保持不变', {
           cause: error,
@@ -192,13 +219,17 @@ export class ChapterWriteService {
     return this.enqueue(`${bookKey}:${targetId}`, async () => {
       const bookPath = this.snapshotService.resolveBookPath(bookKey)
       const filePath = this.snapshotService.resolveInside(bookPath, join('正文', targetId), '正文')
+      const scope = this.sandboxService?.bindBook(bookKey, { senderId: 'chapter-create', frameId: 'internal' })
+      if (scope) this.sandboxService.prepareCandidateTarget(scope, `正文/${targetId}`)
       if (fs.existsSync(filePath)) {
         throw new ChapterWriteError('CHAPTER_ALREADY_EXISTS', '章节已存在', { retryable: false })
       }
-      const nextContent = serializeChapterText(content)
+      const next = chapterBytesAndText(content)
+      const nextContent = next.text
       await fs.promises.mkdir(dirname(filePath), { recursive: true })
       try {
-        const writeResult = await this.atomicWriter(filePath, nextContent)
+        if (scope) this.sandboxService.prepareCandidateTarget(scope, `正文/${targetId}`)
+        const writeResult = await this.atomicWriter(filePath, next.bytes)
         const after = this.snapshotService.readChapterSnapshot(bookKey, targetId)
         if (this.onCommitted) {
           try {
@@ -233,6 +264,82 @@ export class ChapterWriteService {
           retryable: true
         })
       }
+    })
+  }
+
+  async deleteChapterWithExpectedHash({
+    bookName,
+    volumeName,
+    chapterName,
+    expectedHash = ''
+  } = {}) {
+    const targetId = chapterTargetId(volumeName, chapterName)
+    const bookKey = safeSegment(bookName, '书籍名称')
+    return this.enqueue(`${bookKey}:${targetId}`, async () => {
+      const scope = this.sandboxService?.bindBook(bookKey, {
+        senderId: 'chapter-delete',
+        frameId: 'internal'
+      })
+      if (scope) this.sandboxService.resolveReadable(scope, `正文/${targetId}`)
+      const before = this.snapshotService.readChapterSnapshot(bookKey, targetId)
+      const previousBytes = await fs.promises.readFile(before.metadata.filePath)
+      const normalizedExpectedHash = String(expectedHash || '').trim()
+      if (normalizedExpectedHash && normalizedExpectedHash !== before.rawHash) {
+        throw new ChapterWriteError('CHAPTER_VERSION_CONFLICT', '正文已发生变化，无法安全删除', {
+          retryable: false,
+          expectedHash: normalizedExpectedHash,
+          currentHash: before.rawHash
+        })
+      }
+      try {
+        if (scope) this.sandboxService.assertTrustedAbsolute(scope, before.metadata.filePath)
+        await fs.promises.unlink(before.metadata.filePath)
+        if (this.onCommitted) {
+          try {
+            await this.onCommitted({
+              bookName: bookKey,
+              volumeName: safeSegment(volumeName, '卷名'),
+              chapterName: safeSegment(chapterName, '章节名'),
+              previousContent: before.content,
+              content: '',
+              previousHash: before.rawHash,
+              contentHash: null
+            })
+          } catch (error) {
+            await this.atomicWriter(before.metadata.filePath, previousBytes)
+            throw new ChapterWriteError(
+              'CHAPTER_POST_WRITE_FAILED',
+              '章节删除后的统计或元数据更新失败，正文已恢复',
+              { cause: error }
+            )
+          }
+        }
+        return { deleted: true, previousHash: before.rawHash }
+      } catch (error) {
+        if (error instanceof ChapterWriteError) throw error
+        throw new ChapterWriteError('CHAPTER_DELETE_FAILED', '章节删除失败，原正文保持不变', {
+          cause: error,
+          retryable: true
+        })
+      }
+    })
+  }
+
+  async reconcileCommittedChapter({
+    bookName,
+    volumeName,
+    chapterName,
+    previousContent,
+    content
+  } = {}) {
+    if (!this.onCommitted) return
+    await this.onCommitted({
+      bookName: safeSegment(bookName, '书籍名称'),
+      volumeName: safeSegment(volumeName, '卷名'),
+      chapterName: safeSegment(chapterName, '章节名'),
+      previousContent: String(previousContent || ''),
+      content: String(content || ''),
+      recovered: true
     })
   }
 }

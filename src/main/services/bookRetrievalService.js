@@ -9,24 +9,54 @@ function clampChars(value) {
   return Math.min(MAX_MAX_CHARS, Math.floor(numeric))
 }
 
-function truncate(value, maxChars) {
-  const text = String(value || '')
-  return text.length <= maxChars
-    ? { text, truncated: false }
-    : {
-        text: `${text.slice(0, maxChars)}\n\n……内容已按预算截断……`,
-        truncated: true
-      }
-}
-
 function splitLines(content) {
   return String(content || '')
     .replace(/\r\n|\r/g, '\n')
     .split('\n')
 }
 
+function normalizedText(content) {
+  return String(content || '').replace(/\r\n|\r/g, '\n')
+}
+
+function safeSliceEnd(text, startOffset, maxChars, limitOffset = text.length) {
+  let endOffset = Math.min(text.length, limitOffset, startOffset + maxChars)
+  if (
+    endOffset > startOffset &&
+    endOffset < text.length &&
+    /[\uD800-\uDBFF]/.test(text[endOffset - 1]) &&
+    /[\uDC00-\uDFFF]/.test(text[endOffset])
+  ) {
+    endOffset -= 1
+  }
+  return endOffset
+}
+
+function lineStartsFor(text) {
+  const starts = [0]
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] === '\n') starts.push(index + 1)
+  }
+  return starts
+}
+
+function lineAtOffset(starts, offset, textLength) {
+  if (starts.length === 1) return 1
+  const target = Math.max(0, Math.min(textLength, Number(offset) || 0))
+  let low = 0
+  let high = starts.length - 1
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2)
+    if (starts[middle] <= target) low = middle + 1
+    else high = middle - 1
+  }
+  return Math.max(1, high + 1)
+}
+
 function lineWindow(content, startLine, endLine, before, after) {
-  const lines = splitLines(content)
+  const text = normalizedText(content)
+  const lines = text.split('\n')
+  const lineStarts = lineStartsFor(text)
   const requestedStart = Math.max(1, Number(startLine) || 1)
   const requestedEnd = Math.min(
     lines.length,
@@ -35,13 +65,64 @@ function lineWindow(content, startLine, endLine, before, after) {
   const windowStart = Math.max(1, requestedStart - Math.max(0, Number(before) || 0))
   const windowEnd = Math.min(lines.length, requestedEnd + Math.max(0, Number(after) || 0))
   return {
-    content: lines.slice(windowStart - 1, windowEnd).join('\n'),
+    text,
+    lineStarts,
+    startOffset: lineStarts[windowStart - 1],
+    endOffset: windowEnd < lines.length ? lineStarts[windowEnd] - 1 : text.length,
     startLine: windowStart,
     endLine: windowEnd,
     totalLines: lines.length,
     hasMoreBefore: windowStart > 1,
     hasMoreAfter: windowEnd < lines.length
   }
+}
+
+function boundedLineWindow(content, startLine, endLine, before, after, maxChars, startOffset) {
+  const window = lineWindow(content, startLine, endLine, before, after)
+  const requestedOffset = startOffset === undefined ? window.startOffset : Number(startOffset)
+  if (
+    !Number.isInteger(requestedOffset) ||
+    requestedOffset < window.startOffset ||
+    requestedOffset > window.endOffset
+  ) {
+    const error = new Error('字符偏移不在请求的行范围内')
+    error.code = 'SOURCE_OFFSET_INVALID'
+    throw error
+  }
+  const endOffset = safeSliceEnd(window.text, requestedOffset, maxChars, window.endOffset)
+  const text = window.text.slice(requestedOffset, endOffset)
+  const truncated = endOffset < window.endOffset
+  const actualStartLine = lineAtOffset(window.lineStarts, requestedOffset, window.text.length)
+  const actualEndLine = text.length
+    ? lineAtOffset(window.lineStarts, Math.max(requestedOffset, endOffset - 1), window.text.length)
+    : actualStartLine
+  return {
+    ...window,
+    content: text,
+    truncated,
+    returnedStartOffset: requestedOffset,
+    returnedEndOffset: endOffset,
+    returnedStartLine: actualStartLine,
+    returnedEndLine: actualEndLine
+  }
+}
+
+function continuationFor(window) {
+  const before = window.hasMoreBefore
+    ? { type: 'lines', startLine: 1, endLine: window.startLine - 1 }
+    : null
+  let after = null
+  if (window.truncated) {
+    after = {
+      type: 'lines',
+      startLine: lineAtOffset(window.lineStarts, window.returnedEndOffset, window.text.length),
+      endLine: window.endLine,
+      startOffset: window.returnedEndOffset
+    }
+  } else if (window.hasMoreAfter) {
+    after = { type: 'lines', startLine: window.endLine + 1, endLine: window.totalLines }
+  }
+  return { before, after }
 }
 
 function markdownHeadingRange(source, heading) {
@@ -212,21 +293,37 @@ export class BookRetrievalService {
     const startLine = options.startLine || (match ? Number(match[1]) : 1)
     const endLine =
       options.endLine || (match ? Number(match[2]) : splitLines(snapshot.content).length)
-    const window = lineWindow(snapshot.content, startLine, endLine, options.before, options.after)
-    const bounded = truncate(window.content, maxChars)
+    const window = boundedLineWindow(
+      snapshot.content,
+      startLine,
+      endLine,
+      options.before,
+      options.after,
+      maxChars,
+      options.startOffset
+    )
     return {
       success: true,
       versionChanged: changed,
-      source: this.versionInfo(snapshot, `L${window.startLine}-${window.endLine}`),
-      content: bounded.text,
-      truncated: bounded.truncated,
+      source: this.versionInfo(snapshot, `L${window.returnedStartLine}-${window.returnedEndLine}`),
+      content: window.content,
+      truncated: window.truncated,
       hasMoreBefore: window.hasMoreBefore,
-      hasMoreAfter: window.hasMoreAfter || bounded.truncated,
-      location: { startLine: window.startLine, endLine: window.endLine },
-      continueWith: {
-        before: window.hasMoreBefore ? { endLine: window.startLine - 1 } : null,
-        after: window.hasMoreAfter || bounded.truncated ? { startLine: window.endLine + 1 } : null
+      hasMoreAfter: window.hasMoreAfter || window.truncated,
+      location: {
+        startLine: window.returnedStartLine,
+        endLine: window.returnedEndLine,
+        startOffset: window.returnedStartOffset,
+        endOffset: window.returnedEndOffset
       },
+      returnedCoverage: {
+        startLine: window.returnedStartLine,
+        endLine: window.returnedEndLine,
+        startOffset: window.returnedStartOffset,
+        endOffset: window.returnedEndOffset,
+        complete: !window.truncated
+      },
+      continueWith: continuationFor(window),
       message: changed ? '正式版本已变化，以下为当前磁盘正式版本' : undefined
     }
   }
@@ -245,6 +342,7 @@ export class BookRetrievalService {
     if (
       !sectionKey &&
       !heading &&
+      options.locatorType !== 'lines' &&
       referenceLocation &&
       referenceLocation !== 'document' &&
       !referenceRange
@@ -268,8 +366,15 @@ export class BookRetrievalService {
       startLine = range.startLine
       endLine = range.endLine
     }
-    const window = lineWindow(source, startLine, endLine, options.before, options.after)
-    const bounded = truncate(window.content, maxChars)
+    const window = boundedLineWindow(
+      source,
+      startLine,
+      endLine,
+      options.before,
+      options.after,
+      maxChars,
+      options.startOffset
+    )
     const sections = entry.sections || []
     const currentIndex = sectionKey
       ? sections.findIndex((section) => section.key === sectionKey)
@@ -301,7 +406,7 @@ export class BookRetrievalService {
         reference: makeSourceReference({
           sourceType: entry.type,
           targetId: entry.id,
-          location: sectionKey || `L${window.startLine}-${window.endLine}`,
+          location: sectionKey || `L${window.returnedStartLine}-${window.returnedEndLine}`,
           contentHash: snapshot.fileHash
         }),
         sourceType: entry.type,
@@ -320,21 +425,28 @@ export class BookRetrievalService {
           heading: heading || null
         }
       },
-      content: bounded.text,
-      truncated: bounded.truncated,
+      content: window.content,
+      truncated: window.truncated,
       hasMoreBefore: window.hasMoreBefore,
-      hasMoreAfter: window.hasMoreAfter || bounded.truncated,
+      hasMoreAfter: window.hasMoreAfter || window.truncated,
       location: {
-        startLine: window.startLine,
-        endLine: window.endLine,
+        startLine: window.returnedStartLine,
+        endLine: window.returnedEndLine,
+        startOffset: window.returnedStartOffset,
+        endOffset: window.returnedEndOffset,
         section: sectionKey || null,
         heading: heading || null
       },
-      adjacentSections,
-      continueWith: {
-        before: window.hasMoreBefore ? { endLine: window.startLine - 1 } : null,
-        after: window.hasMoreAfter || bounded.truncated ? { startLine: window.endLine + 1 } : null
+      returnedCoverage: {
+        startLine: window.returnedStartLine,
+        endLine: window.returnedEndLine,
+        startOffset: window.returnedStartOffset,
+        endOffset: window.returnedEndOffset,
+        section: sectionKey || null,
+        complete: !window.truncated
       },
+      adjacentSections,
+      continueWith: continuationFor(window),
       message: changed ? '知识文档正式版本已变化，以下为当前磁盘版本' : undefined
     }
   }
@@ -352,21 +464,38 @@ export class BookRetrievalService {
       startLine = range.startLine
       endLine = range.endLine
     }
-    const window = lineWindow(snapshot.content, startLine, endLine, options.before, options.after)
-    const bounded = truncate(window.content, maxChars)
+    const window = boundedLineWindow(
+      snapshot.content,
+      startLine,
+      endLine,
+      options.before,
+      options.after,
+      maxChars,
+      options.startOffset
+    )
     return {
       success: true,
       versionChanged: changed,
-      source: this.versionInfo(snapshot, `L${window.startLine}-${window.endLine}`),
-      content: bounded.text,
-      truncated: bounded.truncated,
+      source: this.versionInfo(snapshot, `L${window.returnedStartLine}-${window.returnedEndLine}`),
+      content: window.content,
+      truncated: window.truncated,
       hasMoreBefore: window.hasMoreBefore,
-      hasMoreAfter: window.hasMoreAfter || bounded.truncated,
+      hasMoreAfter: window.hasMoreAfter || window.truncated,
       location: {
         relativePath: snapshot.metadata.relativePath,
-        startLine: window.startLine,
-        endLine: window.endLine
+        startLine: window.returnedStartLine,
+        endLine: window.returnedEndLine,
+        startOffset: window.returnedStartOffset,
+        endOffset: window.returnedEndOffset
       },
+      returnedCoverage: {
+        startLine: window.returnedStartLine,
+        endLine: window.returnedEndLine,
+        startOffset: window.returnedStartOffset,
+        endOffset: window.returnedEndOffset,
+        complete: !window.truncated
+      },
+      continueWith: continuationFor(window),
       message: changed ? '速记正式保存版本已变化，以下为当前磁盘版本' : undefined
     }
   }

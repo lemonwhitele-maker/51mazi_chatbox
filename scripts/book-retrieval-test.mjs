@@ -36,6 +36,9 @@ function writeLegacy(relativePath, content) {
 try {
   const chapterPath = join(bookPath, '正文', '测试卷', '测试章.txt')
   write(chapterPath, '测试共同词：正文中的测试人物。\r\n\r\n第二段：独立测试内容。\r\n')
+  const longChapterPath = join(bookPath, '正文', '测试卷', '长文续读.txt')
+  const longChapterContent = `# First\r\n${'A'.repeat(1000)}😀\r\n# Second\r\n${'B'.repeat(1000)}`
+  write(longChapterPath, longChapterContent)
   writeKnowledge('characters', 'test-character', 'character', '测试人物', {
     aliases: ['测试别名'], avatar: 'file:///test/avatar.png', markerColor: '#123456'
   }, {
@@ -83,13 +86,13 @@ try {
   const scopes = ['chapters', 'characters', 'settings', 'outlines', 'notes']
 
   const structure = retrievalService.listBookStructure(bookName, scopes, { mode: 'flat' })
-  assert.equal(structure.chapters.length, 1)
+  assert.equal(structure.chapters.length, 2)
   assert.equal(structure.chapters[0].lineEnding, 'CRLF')
   assert.deepEqual(structure.characters.map((item) => item.targetId), ['test-character'])
   assert.deepEqual(structure.settings.map((item) => item.targetId), ['test-setting'])
   assert.deepEqual(structure.outlines.map((item) => item.targetId), ['test-outline'])
   assert.equal(structure.notes.length, 1)
-  assert.equal(structure.items.length, 5)
+  assert.equal(structure.items.length, 6)
 
   const characterProfiles = catalogService.listCharacterProfiles(bookName)
   assert.equal(characterProfiles.length, 1)
@@ -108,7 +111,32 @@ try {
   assert.match(read.content, /测试共同词/)
   assert.equal(read.versionChanged, false)
 
+  const longDescriptor = structure.chapters.find((item) => item.targetId.endsWith('长文续读.txt'))
+  const longPages = []
+  let continuation = { startLine: 1, endLine: 4 }
+  for (let pageNumber = 0; pageNumber < 20; pageNumber += 1) {
+    const page = retrievalService.readBookSource(bookName, longDescriptor.reference, {
+      ...continuation,
+      maxChars: 200
+    })
+    longPages.push(page.content)
+    assert.doesNotMatch(page.content, /内容已按预算截断/, '截断提示不得混入原文')
+    assert.equal(page.location.endOffset - page.location.startOffset, page.content.length)
+    if (!page.continueWith.after) break
+    continuation = page.continueWith.after
+  }
+  assert.equal(longPages.join(''), longChapterContent.replace(/\r\n|\r/g, '\n'))
+  const firstLongPage = retrievalService.readBookSource(bookName, longDescriptor.reference, {
+    startLine: 1,
+    endLine: 4,
+    maxChars: 200
+  })
+  assert.equal(firstLongPage.location.endLine, 2, '实际覆盖行号不能声称整篇均已返回')
+  assert.equal(firstLongPage.continueWith.after.startLine, 2, '续读必须从被截断的同一行继续')
+  assert.equal(firstLongPage.returnedCoverage.complete, false)
+
   const characterRead = retrievalService.readBookSource(bookName, 'character:test-character#current-state')
+  assert.equal(characterRead.location.section, 'current-state')
   assert.match(characterRead.content, /人物的当前状态/)
   assert.doesNotMatch(characterRead.content, /人物的已确认事实/)
   assert.match(retrievalService.readBookSource(bookName, 'setting:test-setting#definition').content, /设定定义/)
@@ -130,7 +158,7 @@ try {
   assert.deepEqual(chapterOnlyStructure.characters, [])
   assert.deepEqual(chapterOnlyStructure.settings, [])
   assert.deepEqual(chapterOnlyStructure.outlines, [])
-  assert.equal(chapterOnlyStructure.items.length, 2)
+  assert.equal(chapterOnlyStructure.items.length, 3)
   assert.equal(chapterOnlyRetrieval.searchBookKnowledge(bookName, '旧格式专属词', { scopes }).results.length, 0)
 
   write(chapterPath, '新保存版本：测试人物改变了决定。\r\n')

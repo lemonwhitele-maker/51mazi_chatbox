@@ -1,6 +1,10 @@
+import { resolveModelBudgets } from './agentBudgets.js'
+import { CLOUD_AI_PROVIDERS, validateCloudAiBaseUrl } from '../../shared/cloudAiProviders.js'
+
 const STORE_KEY = 'agentApi.modelConfig.v1'
 
 export const AGENT_PROVIDER_CATALOG = Object.freeze([
+  ...CLOUD_AI_PROVIDERS,
   {
     id: 'ollama',
     name: 'Ollama（本地）',
@@ -67,12 +71,22 @@ function normalizeProviderId(value) {
 function normalizeProviderConfig(providerId, value = {}, previous = {}) {
   const defaults = CATALOG_BY_ID.get(providerId) || {}
   const apiKeyProvided = Object.prototype.hasOwnProperty.call(value, 'apiKey')
+  const modelChanged =
+    previous.model && value.model !== undefined && cleanString(value.model, 300) !== previous.model
+  const budgets = resolveModelBudgets({
+    modelLimits: { ...(modelChanged ? {} : previous.modelLimits), ...value.modelLimits },
+    generationBudget: {
+      ...(modelChanged ? {} : previous.generationBudget),
+      ...value.generationBudget
+    }
+  })
   return {
+    ...budgets,
     baseUrl: cleanString(value.baseUrl ?? previous.baseUrl ?? defaults.baseUrl, 1000),
     model: cleanString(value.model ?? previous.model ?? defaults.model, 300),
     apiKey: apiKeyProvided ? cleanString(value.apiKey, 4096) : cleanString(previous.apiKey, 4096),
     proxyPort: cleanString(value.proxyPort ?? previous.proxyPort, 5),
-    thinkingEnabled: value.thinkingEnabled !== false
+    thinkingEnabled: (value.thinkingEnabled ?? previous.thinkingEnabled) !== false
   }
 }
 
@@ -91,7 +105,10 @@ function normalizeConfig(value = {}, previous = {}) {
   }
   const selectedProvider = normalizeProviderId(value.selectedProvider ?? previous.selectedProvider)
   return {
-    defaultRuntime: value.defaultRuntime === 'agent-api' ? 'agent-api' : 'codex-app-server',
+    defaultRuntime:
+      (value.defaultRuntime ?? previous.defaultRuntime) === 'agent-api'
+        ? 'agent-api'
+        : 'codex-app-server',
     selectedProvider,
     providers
   }
@@ -134,6 +151,10 @@ export class AgentModelConfigService {
   setConfig(value = {}) {
     const previous = this.getStoredConfig()
     const next = normalizeConfig(value, previous)
+    if (next.defaultRuntime === 'agent-api') {
+      if (!next.providers[next.selectedProvider]) throw new Error('请先配置默认厂商的 API 参数')
+      this.prepareProvider(next.selectedProvider, next.providers[next.selectedProvider])
+    }
     this.store?.set(STORE_KEY, next)
     return publicConfig(next)
   }
@@ -143,6 +164,7 @@ export class AgentModelConfigService {
     const previous = this.getStoredConfig()
     const provider = normalizeProviderConfig(id, value, previous.providers[id] || {})
     if (value.defaultRuntime === 'agent-api') {
+      validateCloudAiBaseUrl(id, provider.baseUrl)
       if (!provider.baseUrl || !provider.model) {
         throw new Error('请先填写完整的 Agent API 地址和模型名称')
       }
@@ -167,10 +189,19 @@ export class AgentModelConfigService {
 
   getProvider(providerId) {
     const config = this.getStoredConfig()
-    const id = normalizeProviderId(providerId || config.selectedProvider)
-    const provider = config.providers[id]
+    return this.prepareProvider(providerId || config.selectedProvider)
+  }
+
+  prepareProvider(providerId, value) {
+    const id = cleanString(providerId, 100)
+    if (!CATALOG_BY_ID.has(id)) throw new Error('该厂商配置已不可用，请在对话中重新选择模型')
+    const saved = this.getStoredConfig().providers[id]
+    const provider = value ? normalizeProviderConfig(id, value, saved || {}) : saved
+    if (!provider?.baseUrl)
+      throw new Error(`请先配置 ${CATALOG_BY_ID.get(id)?.name || id} 的 API 地址`)
     if (!provider?.model)
       throw new Error(`请先配置 ${CATALOG_BY_ID.get(id)?.name || id} 的模型名称`)
+    validateCloudAiBaseUrl(id, provider.baseUrl)
     if (!provider.apiKey && !CATALOG_BY_ID.get(id)?.apiKeyOptional) {
       throw new Error(`请先配置 ${CATALOG_BY_ID.get(id)?.name || id} 的 API Key`)
     }
@@ -190,6 +221,7 @@ export class AgentModelConfigService {
         id,
         name: CATALOG_BY_ID.get(id)?.name || id,
         model: provider.model,
+        thinkingEnabled: provider.thinkingEnabled,
         isSelected: id === config.selectedProvider
       }))
   }

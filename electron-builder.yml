@@ -7,6 +7,7 @@ productName: 51mazi
 directories:
   buildResources: build
 files:
+  - '!assets/readme/**'
   - '!**/.vscode/*'
   - '!src/*'
   - '!electron.vite.config.{js,ts,mjs,cjs}'
@@ -73,7 +74,7 @@ appImage:
 npmRebuild: false
 publish:
   provider: github
-  owner: xiaoshengxianjun
-  repo: 51mazi
+  owner: lemonwhitele-maker
+  repo: 51mazi_chatbox
 electronDownload:
   mirror: https://npmmirror.com/mirrors/electron/

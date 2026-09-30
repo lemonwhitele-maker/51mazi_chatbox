@@ -108,6 +108,8 @@
 </template>
 
 <script setup>
+import { traceSave } from '@renderer/service/saveDiagnostics'
+
 import {
   ref,
   watch,
@@ -382,17 +384,29 @@ function handleChapterContentUpdated() {
 }
 
 async function applyBodyWriteProposalResult({ proposal, result } = {}) {
+  traceSave('proposal.sync-received', { proposalId: proposal?.proposalId, targetId: proposal?.target?.documentId, path: editorStore.file?.path, name: editorStore.file?.name, volume: editorStore.file?.volume, savedHash: editorStore.file?.savedHash, contentHash: result?.contentHash, hasEditor: !!editor.value, dirty: editorStore.hasUnsavedChanges })
   clearBodyWriteProposalPreview(proposal?.proposalId)
+  if (proposal?.proposalType === 'document' && proposal?.target?.type === 'chapter')
+    emit('refresh-chapters')
+  const openChapterId = editorStore.file?.type === 'chapter'
+    ? `${editorStore.file?.volume || editorStore.file?.volumeName || ''}/${String(
+        editorStore.file?.name || editorStore.chapterTitle || ''
+      ).replace(/\.txt$/i, '')}.txt`
+    : ''
   if (
     !editor.value ||
     editorStore.file?.type !== 'chapter' ||
-    String(editorStore.file?.path || '') !== String(proposal?.target?.documentId || '') ||
+    ![String(editorStore.file?.path || ''), openChapterId].includes(
+      String(proposal?.target?.documentId || '')
+    ) ||
     typeof result?.content !== 'string'
-  )
+  ) {
+    traceSave('proposal.sync-skipped', { proposalId: proposal?.proposalId, targetId: proposal?.target?.documentId, path: editorStore.file?.path, reason: 'editor-or-target-or-result-mismatch' })
     return false
+  }
 
   chapterEditorContentRef.value?.setChapterContent(editor.value, result.content)
-  editorStore.setContent(result.content, { isInitialLoad: true })
+  editorStore.setContent(serializeChapterEditor(editor.value), { isInitialLoad: true })
   if (result.contentHash) editorStore.updateFileSavedHash(result.contentHash)
   editorStore.markSaved()
   emit('refresh-chapters')
@@ -474,7 +488,8 @@ function rejectAgentDiff() {
 
 // 人物高亮相关状态
 const characterHighlightEnabled = ref(false) // 人物高亮开关状态，默认关闭
-const characters = ref([]) // 人物数据列表
+const characters = ref([]) // 人物与已保存设定的高亮词条
+let highlightLoadVersion = 0
 let characterHighlightTimer = null // 人物高亮定时器
 const defaultHighlightColor = '#ffeb3b' // 默认高亮颜色（黄色）
 const KNOWLEDGE_DOCUMENTS_CHANGED_EVENT = 'knowledge-documents-changed'
@@ -926,7 +941,8 @@ function setupCompositionHandlers() {
     isComposing = false
     // 输入法确认后，立即更新字数统计
     if (editor.value) {
-      const content = editor.value.getText()
+      const content = editorStore.file?.type === 'chapter'
+        ? serializeChapterEditor(editor.value) : editor.value.getText()
       editorStore.setContent(content)
     }
   }
@@ -1104,12 +1120,14 @@ async function saveFile(showMessage = false) {
     })
     if (showMessage && result.success) emit('refresh-notes')
   } else if (file.type === 'chapter') {
+    traceSave('save.request', { bookName: props.bookName, path: file.path, name: file.name, volume: file.volume, expectedHash: file.savedHash || '', contentLength: String(contentToSave ?? '').length, manual: showMessage })
     result = await window.electron.saveChapter({
       ...saveParams,
       volumeName: file.volume,
       chapterName: file.name,
       expectedHash: file.savedHash || ''
     })
+    traceSave('save.result', { path: file.path, success: result?.success, code: result?.code, currentHash: result?.currentHash, contentHash: result?.contentHash, savedHash: editorStore.file?.savedHash })
     if (showMessage && result.success) {
       emit('refresh-chapters')
       // 保存成功后，重新加载书籍总字数（确保与服务器同步）
@@ -1120,7 +1138,10 @@ async function saveFile(showMessage = false) {
   }
 
   if (result?.success) {
-    editorStore.markSaved()
+    // A save may finish after navigation or further typing. Only the submitted
+    // snapshot is saved; newer edits must remain dirty.
+    if (editorStore.file?.path !== file.path) return true
+    editorStore.markSaved(file.type === 'chapter' ? contentToSave : undefined)
     if (file.type === 'chapter' && result.contentHash) {
       editorStore.updateFileSavedHash(result.contentHash)
     }
@@ -1231,21 +1252,40 @@ async function autoSaveContent() {
   await saveFile(false)
 }
 
-// 加载人物数据
+// 加载人物与已保存的设定；保留原开关的书籍偏好。
 async function loadCharacters() {
-  if (!props.bookName) return
-  try {
-    const data = await window.electron.readCharacters(props.bookName)
-    characters.value = Array.isArray(data) ? data : []
-  } catch (error) {
-    console.error('加载人物数据失败:', error)
-    characters.value = []
+  const bookName = props.bookName
+  const version = ++highlightLoadVersion
+  characters.value = []
+  if (!bookName) return
+  const results = await Promise.allSettled([
+    window.electron.readCharacters(bookName),
+    window.electron.listKnowledgeDocuments(bookName, 'settings')
+  ])
+  if (version !== highlightLoadVersion || bookName !== props.bookName) return
+
+  const [people, settings] = results
+  const entries = people.status === 'fulfilled' && Array.isArray(people.value) ? people.value : []
+  const settingDocuments =
+    settings.status === 'fulfilled' && settings.value?.success
+      ? settings.value.documents || []
+      : []
+  characters.value = [
+    ...entries,
+    ...settingDocuments.flatMap((document) =>
+      [document.title, ...(document.aliases || [])]
+        .filter((name) => typeof name === 'string' && name.trim())
+        .map((name) => ({ name: name.trim(), markerColor: '#67c23a' }))
+    )
+  ]
+  for (const result of results) {
+    if (result.status === 'rejected') console.error('加载高亮词条失败:', result.reason)
   }
 }
 
 async function handleKnowledgeDocumentsChanged(event) {
   const detail = event?.detail || {}
-  if (detail.scope !== 'characters' || detail.bookName !== props.bookName) return
+  if (!['characters', 'settings'].includes(detail.scope) || detail.bookName !== props.bookName) return
   await loadCharacters()
   if (
     editorPanelActive.value &&
@@ -1301,8 +1341,7 @@ function applyCharacterHighlights() {
     !editor.value ||
     editorStore.file?.type !== 'chapter' ||
     searchPanelVisible.value ||
-    !characterHighlightEnabled.value ||
-    characters.value.length === 0
+    !characterHighlightEnabled.value
   ) {
     return
   }

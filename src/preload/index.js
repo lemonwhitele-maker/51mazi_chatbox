@@ -7,6 +7,7 @@ const api = {}
 // 自定义 Electron API（书籍、通义万相等），与 electronAPI 合并后供渲染进程使用；
 // contextIsolated 为 true 时通过 contextBridge 暴露，为 false 时直接挂到 window.electron
 const customElectronAPI = {
+  traceSaveDiagnostic: (payload) => ipcRenderer.send('save:diagnostic', payload),
   // --------- 书籍相关 ---------
   selectBooksDir: () => ipcRenderer.invoke('select-books-dir'),
   onApiConfigDirectoryChanged: (callback) => {
@@ -110,6 +111,9 @@ const customElectronAPI = {
     ipcRenderer.invoke('knowledge:v2:resolve-reference', { bookName, reference }),
   // --------- 领域 Harness（跨 Turn 历史由 51mazi 本地持有）---------
   harnessGetStatus: (payload = {}) => ipcRenderer.invoke('harness:status', payload),
+  harnessBindBook: (bookName) => ipcRenderer.invoke('harness:book:bind', { bookName }),
+  harnessUpdateEditorState: (bookName, workspace) =>
+    ipcRenderer.invoke('harness:editor-state:update', { bookName, workspace }),
   harnessListConversations: (bookName) =>
     ipcRenderer.invoke('harness:conversation:list', { bookName }),
   harnessCreateConversation: (bookName, title, runtimeId, options = {}) =>
@@ -118,26 +122,27 @@ const customElectronAPI = {
     ipcRenderer.invoke('harness:conversation:read', { bookName, conversationId }),
   harnessArchiveConversation: (bookName, conversationId) =>
     ipcRenderer.invoke('harness:conversation:archive', { bookName, conversationId }),
-  harnessListModels: () => ipcRenderer.invoke('harness:model:list'),
-  harnessUpdateConversationSettings: (bookName, conversationId, model, effort, runtimeId) =>
+  harnessListModels: (options) => ipcRenderer.invoke('harness:model:list', options),
+  harnessUpdateConversationSettings: (bookName, conversationId, model, effort, runtimeId, toolMode) =>
     ipcRenderer.invoke('harness:conversation:settings:update', {
       bookName,
       conversationId,
       model,
       effort,
-      runtimeId
+      runtimeId,
+      toolMode
     }),
   harnessStartTurn: (payload) => ipcRenderer.invoke('harness:turn:start', payload),
   harnessCancelTurn: (bookName, conversationId) =>
     ipcRenderer.invoke('harness:turn:cancel', { bookName, conversationId }),
   harnessListWriteProposals: (bookName, conversationId) =>
     ipcRenderer.invoke('harness:write-proposal:list', { bookName, conversationId }),
-  harnessRejectWriteProposal: (bookName, conversationId, proposalId) =>
-    ipcRenderer.invoke('harness:write-proposal:reject', { bookName, conversationId, proposalId }),
-  harnessApplyWriteProposal: (bookName, conversationId, proposalId) =>
-    ipcRenderer.invoke('harness:write-proposal:apply', { bookName, conversationId, proposalId }),
-  harnessUndoWriteProposal: (bookName, conversationId, proposalId) =>
-    ipcRenderer.invoke('harness:write-proposal:undo', { bookName, conversationId, proposalId }),
+  harnessRejectDocumentProposal: (proposalId, revision, confirmationCredential) =>
+    ipcRenderer.invoke('harness:document-proposal:reject', { proposalId, revision, confirmationCredential }),
+  harnessApplyDocumentProposal: (proposalId, revision, confirmationCredential) =>
+    ipcRenderer.invoke('harness:document-proposal:apply', { proposalId, revision, confirmationCredential }),
+  harnessUndoDocumentProposal: (proposalId, revision, confirmationCredential) =>
+    ipcRenderer.invoke('harness:document-proposal:undo', { proposalId, revision, confirmationCredential }),
   onHarnessEvent: (callback) => {
     if (typeof callback !== 'function') return () => {}
     const listener = (_, event) => callback(event)

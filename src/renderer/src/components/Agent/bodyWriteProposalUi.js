@@ -1,10 +1,14 @@
 export function bodyWriteProposalActions(proposal = {}) {
+  if (proposal.legacyReadOnly === true)
+    return { canConfirm: false, canReject: false, canCopy: true, canUndo: false }
   const retryableFailure = proposal.status === 'failed' && proposal.failure?.retryable === true
+  const trustedDocumentAction =
+    proposal.proposalType !== 'document' || Boolean(proposal.confirmationCredential)
   return {
-    canConfirm: proposal.status === 'pending' || retryableFailure,
-    canReject: proposal.status === 'pending' || retryableFailure,
+    canConfirm: trustedDocumentAction && (proposal.status === 'pending' || retryableFailure),
+    canReject: trustedDocumentAction && (proposal.status === 'pending' || retryableFailure),
     canCopy: Boolean(proposal.proposedText || proposal.preview?.after),
-    canUndo: proposal.status === 'applied'
+    canUndo: trustedDocumentAction && proposal.status === 'applied'
   }
 }
 

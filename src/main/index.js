@@ -1,6 +1,10 @@
 import { app, shell, BrowserWindow, ipcMain, dialog, nativeImage, screen } from 'electron'
 import { join, resolve, sep } from 'path'
 import fs from 'fs'
+import { configureSaveDiagnostics, logSaveDiagnostic, logRendererSaveDiagnostic, saveErrorDetails } from './services/saveDiagnostics.js'
+
+configureSaveDiagnostics(join(app.getPath('userData'), 'logs'))
+ipcMain.on('save:diagnostic', (event, payload) => logRendererSaveDiagnostic(event.sender.id, payload))
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import Store from 'electron-store'
@@ -34,6 +38,9 @@ import {
   writeHarnessQuickNotes
 } from './services/harnessQuickNotesService.js'
 import { registerHarnessIpc } from './services/harnessIpc.js'
+import BookWordStatsService, {
+  countChapterWords as countSavedChapterWords
+} from './services/bookWordStatsService.js'
 const { autoUpdater } = pkg
 const MAIN_I18N_MESSAGES = {
   'zh-CN': {
@@ -90,18 +97,19 @@ function mt(key) {
 
 // -------------------- Auto Update Feed URL (production) --------------------
 // 说明：
-// - 我们仍然发布 GitHub Release（用于公开下载/备份）
-// - 但客户端的自动更新源改为自建 51mazi-api（国内下载更稳定）
-// - electron-updater 会从该目录读取 latest*.yml 并下载其中引用的安装包文件
-const MAZI_UPDATE_URL = process.env.MAZI_UPDATE_URL || 'https://api.51mazi.com/api/download/stable'
+// - 默认使用本 Fork 的 GitHub Release，避免访问上游更新源。
+// - MAZI_UPDATE_URL 可显式覆盖为自建 generic 更新源。
+// - 仅源码发布不提供安装包或自动更新元数据。
+const MAZI_UPDATE_URL = process.env.MAZI_UPDATE_URL
 
 function setupUpdaterFeedUrl() {
   if (is.dev) return
   try {
-    autoUpdater.setFeedURL({
-      provider: 'generic',
-      url: MAZI_UPDATE_URL
-    })
+    autoUpdater.setFeedURL(
+      MAZI_UPDATE_URL
+        ? { provider: 'generic', url: MAZI_UPDATE_URL }
+        : { provider: 'github', owner: 'lemonwhitele-maker', repo: '51mazi_chatbox' }
+    )
     console.log('已设置自动更新源:', MAZI_UPDATE_URL)
   } catch (error) {
     console.error('设置自动更新源失败:', error)
@@ -199,6 +207,7 @@ async function generateConfiguredImage(options) {
 const bookSnapshotService = new BookSavedSnapshotService({
   booksDirProvider: () => store.get('booksDir') || store.get('config.booksDir') || ''
 })
+const bookWordStatsService = new BookWordStatsService({ snapshotService: bookSnapshotService })
 
 function safeBookDirectoryName(value, { sanitize = false } = {}) {
   const raw = sanitize ? String(value || '').replace(/[\\/:*?"<>|]/g, '_') : String(value || '')
@@ -248,7 +257,7 @@ const bookRetrievalService = new BookRetrievalService({
 const chapterWriteService = new ChapterWriteService({
   snapshotService: bookSnapshotService,
   onCommitted: async ({ bookName, volumeName, chapterName, previousContent, content }) => {
-    updateChapterStats(bookName, volumeName, chapterName, previousContent, content)
+    await updateChapterStats(bookName, volumeName, chapterName, previousContent, content)
     await updateBookMetadata(bookName)
   }
 })
@@ -695,6 +704,9 @@ function createWindow() {
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
 app.whenReady().then(() => {
+  void bookWordStatsService.migrateLegacyRootStats().catch((error) => {
+    console.warn('旧版书库统计迁移失败，已保留原文件:', error?.message || error)
+  })
   // Set app user model id for windows
   // 建议与 electron-builder 的 appId 保持一致（影响任务栏归属/通知分组/安装识别等）
   // 注意：该值对已发布的 Windows 应用尽量保持不变，否则可能影响旧版本升级链路
@@ -1340,11 +1352,14 @@ ipcMain.handle('create-chapter', async (event, { bookName, volumeId }) => {
 
   fs.writeFileSync(filePath, '')
 
-  // 强制同步文件系统，确保文件立即可见（Windows兼容）
+  // Windows 刷盘需要可写句柄；同步失败时也必须关闭，避免阻塞后续原子替换。
   try {
-    const fd = fs.openSync(filePath, 'r')
-    fs.fsyncSync(fd)
-    fs.closeSync(fd)
+    const fd = fs.openSync(filePath, 'r+')
+    try {
+      fs.fsyncSync(fd)
+    } finally {
+      fs.closeSync(fd)
+    }
   } catch (error) {
     // 如果同步失败，记录错误但不影响主流程
     console.warn('文件同步失败:', error.message)
@@ -2263,9 +2278,7 @@ ipcMain.handle('chapter:check-exists', async (event, { bookName, volumeName, cha
 
 // 计算章节字数（排除空格、换行符、制表符等格式字符）
 function countChapterWords(content) {
-  if (!content) return 0
-  // 移除空格、换行符、制表符等格式字符，只计算实际内容
-  return content.replace(/[\s\n\r\t]/g, '').length
+  return countSavedChapterWords(content)
 }
 
 // 计算书籍总字数
@@ -2317,100 +2330,21 @@ async function updateBookMetadata(bookName) {
   }
 }
 
-// 统计文件路径
-const STATS_FILE = 'word_stats.json'
-
-// 获取统计文件路径
-function getStatsFilePath() {
-  const booksDir = store.get('booksDir')
-  return join(booksDir, STATS_FILE)
-}
-
-// 读取统计数据
+// 书架总览只汇总每本书内的 .51mazi/stats/word-stats.json。
+// 旧根级 word_stats.json 仅由启动迁移读取，不再进入任何保存链。
 function readStats() {
-  const statsPath = getStatsFilePath()
-  if (!fs.existsSync(statsPath)) {
-    return { dailyStats: {}, chapterStats: {}, bookDailyStats: {} }
-  }
-  try {
-    return JSON.parse(fs.readFileSync(statsPath, 'utf-8'))
-  } catch (error) {
-    console.error('读取统计文件失败:', error)
-    return { dailyStats: {}, chapterStats: {}, bookDailyStats: {} }
-  }
-}
-
-// 保存统计数据
-function saveStats(stats) {
-  const statsPath = getStatsFilePath()
-  try {
-    fs.writeFileSync(statsPath, JSON.stringify(stats, null, 2), 'utf-8')
-    return true
-  } catch (error) {
-    console.error('保存统计文件失败:', error)
-    return false
-  }
+  return bookWordStatsService.readAggregate()
 }
 
 // 更新章节字数统计
 function updateChapterStats(bookName, volumeName, chapterName, oldContent, newContent) {
-  const stats = readStats()
-  const today = new Date().toISOString().split('T')[0]
-  const chapterKey = `${bookName}/${volumeName}/${chapterName}`
-
-  // 使用统一的字数统计函数，排除空格、换行符、制表符
-  const oldLength = countChapterWords(oldContent)
-  const newLength = countChapterWords(newContent)
-  const wordChange = newLength - oldLength
-
-  // 章节上次统计信息
-  const prev = stats.chapterStats[chapterKey]
-  const lastUpdate = prev ? prev.lastUpdate : today
-
-  // 1. 先把旧字数从旧日期扣除
-  if (prev && stats.dailyStats[lastUpdate]) {
-    stats.dailyStats[lastUpdate] -= prev.totalWords
-    if (stats.dailyStats[lastUpdate] < 0) stats.dailyStats[lastUpdate] = 0
-  }
-
-  // 2. 再把新字数加到今天
-  if (!stats.dailyStats[today]) stats.dailyStats[today] = 0
-  stats.dailyStats[today] += newLength
-
-  // 3. 更新章节统计
-  stats.chapterStats[chapterKey] = {
-    totalWords: newLength,
-    lastUpdate: today,
-    wordChange: wordChange, // 记录本次字数变化
-    lastContentLength: oldLength // 记录上次内容长度
-  }
-
-  // 4. 更新书籍每日净增字数统计
-  if (!stats.bookDailyStats) stats.bookDailyStats = {}
-  if (!stats.bookDailyStats[bookName]) stats.bookDailyStats[bookName] = {}
-  if (!stats.bookDailyStats[bookName][today]) {
-    stats.bookDailyStats[bookName][today] = {
-      netWords: 0,
-      addWords: 0,
-      deleteWords: 0,
-      totalWords: 0
-    }
-  }
-
-  // 计算净增字数
-  if (wordChange > 0) {
-    stats.bookDailyStats[bookName][today].addWords += wordChange
-  } else if (wordChange < 0) {
-    stats.bookDailyStats[bookName][today].deleteWords += Math.abs(wordChange)
-  }
-
-  stats.bookDailyStats[bookName][today].netWords =
-    stats.bookDailyStats[bookName][today].addWords -
-    stats.bookDailyStats[bookName][today].deleteWords
-
-  stats.bookDailyStats[bookName][today].totalWords = newLength
-
-  saveStats(stats)
+  return bookWordStatsService.updateChapter(
+    bookName,
+    volumeName,
+    chapterName,
+    oldContent,
+    newContent
+  )
 }
 
 // 修改保存章节内容的处理函数
@@ -2421,6 +2355,7 @@ ipcMain.handle(
     { bookName, volumeName, chapterName, newName, content, expectedHash = '' } = {}
   ) => {
     try {
+      logSaveDiagnostic('save-chapter.request', { senderId: event.sender.id, bookName, volumeName, chapterName, expectedHash, contentLength: String(content ?? '').length })
       const currentTargetId = chapterTargetId(volumeName, chapterName)
       const requestedName = String(newName || chapterName).trim()
       const nextTargetId = chapterTargetId(volumeName, requestedName)
@@ -2463,6 +2398,7 @@ ipcMain.handle(
         bytesWritten: result.bytesWritten
       }
     } catch (error) {
+      logSaveDiagnostic('save-chapter.failed', { bookName, volumeName, chapterName, expectedHash, error: saveErrorDetails(error) })
       const code = error instanceof ChapterWriteError ? error.code : 'CHAPTER_WRITE_FAILED'
       return {
         success: false,

@@ -1,3 +1,4 @@
+import { traceSave } from '@renderer/service/saveDiagnostics'
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 
@@ -8,6 +9,7 @@ export const useEditorStore = defineStore('editor', () => {
   const chapterTitle = ref('')
   const currentBookName = ref('')
   const hasUnsavedChanges = ref(false)
+  let savedChapterContent = ''
 
   /**
    * 笔记正文在磁盘上为 HTML；`content` 仅为纯文本字数统计。
@@ -44,6 +46,7 @@ export const useEditorStore = defineStore('editor', () => {
 
   // 开始编辑会话（章节维度，不影响全局统计）
   function startEditingSession(initialContent) {
+    savedChapterContent = String(initialContent || '').replace(/\r\n/g, '\n')
     const initialLength = getContentWordCount(initialContent)
     // 初始化章节字数基线
     chapterWordBaseline.value = initialLength
@@ -118,20 +121,28 @@ export const useEditorStore = defineStore('editor', () => {
   function setContent(newContent, options = {}) {
     const oldContent = content.value
     content.value = newContent
-    if (options.isInitialLoad) hasUnsavedChanges.value = false
-    else if (!isInitializing.value) hasUnsavedChanges.value = true
+    if (options.isInitialLoad) {
+      savedChapterContent = String(newContent || '').replace(/\r\n/g, '\n')
+      hasUnsavedChanges.value = false
+    } else if (file.value?.type === 'chapter') {
+      hasUnsavedChanges.value = String(newContent || '').replace(/\r\n/g, '\n') !== savedChapterContent
+    } else if (!isInitializing.value) hasUnsavedChanges.value = true
 
     // 记录字数变化
     recordWordChange(oldContent, newContent, options)
   }
 
-  function markSaved() {
-    hasUnsavedChanges.value = false
+  function markSaved(savedContent = content.value) {
+    savedChapterContent = String(savedContent || '').replace(/\r\n/g, '\n')
+    hasUnsavedChanges.value = file.value?.type === 'chapter'
+      ? String(content.value || '').replace(/\r\n/g, '\n') !== savedChapterContent
+      : false
   }
 
   function updateFileSavedHash(savedHash) {
     const normalized = typeof savedHash === 'string' && savedHash ? savedHash : null
     if (!file.value || !normalized) return
+    traceSave('hash.updated', { path: file.value.path, name: file.value.name, previousHash: file.value.savedHash, savedHash: normalized })
     file.value = { ...file.value, savedHash: normalized }
   }
 
@@ -170,6 +181,7 @@ export const useEditorStore = defineStore('editor', () => {
       clearNoteDraft()
     }
 
+    traceSave('file.set', { path: newFile?.path, name: newFile?.name, volume: newFile?.volume, type: newFile?.type, previousHash: prev?.savedHash, savedHash: newFile?.savedHash })
     file.value = newFile
     if (newFile?.type === 'chapter') {
       isInitializing.value = true

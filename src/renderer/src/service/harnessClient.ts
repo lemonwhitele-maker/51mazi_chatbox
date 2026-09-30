@@ -32,6 +32,9 @@ export type BodyWriteProposal = {
   resolvedAt: string | null
   appliedHash?: string | null
   failure?: { code: string; message: string; retryable: boolean } | null
+  requiresRegeneration?: boolean
+  requiresReview?: boolean
+  legacyReadOnly?: boolean
 }
 
 export type KnowledgeWriteProposal = {
@@ -73,6 +76,26 @@ export type KnowledgeWriteProposal = {
   createdAt: string
   resolvedAt: string | null
   appliedHash?: string | null
+  failure?: { code: string; message: string; retryable: boolean } | null
+  requiresRegeneration?: boolean
+  requiresReview?: boolean
+  legacyReadOnly?: boolean
+}
+
+export type DocumentWriteProposal = {
+  proposalType: 'document'
+  proposalId: string
+  revision: number
+  conversationId: string
+  confirmationCredential: string | null
+  operation: 'create' | 'write' | 'edit'
+  target: { path: string; type: 'character' | 'setting' | 'outline' | 'chapter' | 'note'; scope: 'characters' | 'settings' | 'outlines' | 'chapters' | 'notes'; documentId: string; title?: string }
+  summary: { operation: string; beforeChars: number; afterChars: number; changedChars: number; editCount: number }
+  preview: { before: string; after: string; complete: boolean; selection?: { before: string; after: string } }
+  status: 'pending' | 'applying' | 'applied' | 'rejected' | 'superseded' | 'stale' | 'conflicted' | 'undone'
+  candidateHash: string
+  createdAt: string
+  resolvedAt: string | null
   failure?: { code: string; message: string; retryable: boolean } | null
 }
 
@@ -124,24 +147,33 @@ export function normalizeHarnessWorkspaceContext(value: Record<string, any> = {}
 }
 
 export const harnessClient = {
+  bindBook: (bookName: string) => electron.harnessBindBook(bookName),
+  updateEditorState: (bookName: string, workspace: HarnessWorkspace) =>
+    electron.harnessUpdateEditorState(bookName, normalizeHarnessWorkspaceContext(workspace)),
   getStatus: (payload = {}) => electron.harnessGetStatus(payload),
   listConversations: (bookName: string) => electron.harnessListConversations(bookName),
   createConversation: (
     bookName: string,
     title?: string,
     runtimeId?: 'fake' | 'codex-app-server' | 'agent-router' | 'agent-api',
-    options?: { model?: string | null; effort?: string | null; autoTitle?: boolean }
+    options?: { model?: string | null; effort?: string | null; autoTitle?: boolean; toolMode?: 'book-primitives-v1' }
   ) => electron.harnessCreateConversation(bookName, title, runtimeId, options),
   readConversation: (bookName: string, conversationId: string) => electron.harnessReadConversation(bookName, conversationId),
   archiveConversation: (bookName: string, conversationId: string) => electron.harnessArchiveConversation(bookName, conversationId),
-  listModels: () => electron.harnessListModels(),
-  updateConversationSettings: (bookName: string, conversationId: string, model: string | null, effort: string | null, runtimeId?: 'agent-router') => electron.harnessUpdateConversationSettings(bookName, conversationId, model, effort, runtimeId),
+  listModels: (options = {}) => electron.harnessListModels(options),
+  updateConversationSettings: (bookName: string, conversationId: string, model: string | null, effort: string | null, runtimeId?: 'agent-router', toolMode?: 'book-primitives-v1') => electron.harnessUpdateConversationSettings(bookName, conversationId, model, effort, runtimeId, toolMode),
   startTurn: (payload: { bookName: string; conversationId: string; text: string; workspace?: HarnessWorkspace; model?: string | null; effort?: string | null }) => electron.harnessStartTurn(payload),
   cancelTurn: (bookName: string, conversationId: string) => electron.harnessCancelTurn(bookName, conversationId),
-  listWriteProposals: (bookName: string, conversationId: string): Promise<Array<BodyWriteProposal | KnowledgeWriteProposal>> => electron.harnessListWriteProposals(bookName, conversationId),
-  rejectWriteProposal: (bookName: string, conversationId: string, proposalId: string): Promise<BodyWriteProposal | KnowledgeWriteProposal> => electron.harnessRejectWriteProposal(bookName, conversationId, proposalId),
-  applyWriteProposal: (bookName: string, conversationId: string, proposalId: string) => electron.harnessApplyWriteProposal(bookName, conversationId, proposalId),
-  undoWriteProposal: (bookName: string, conversationId: string, proposalId: string) => electron.harnessUndoWriteProposal(bookName, conversationId, proposalId),
+  listWriteProposals: (bookName: string, conversationId: string): Promise<Array<BodyWriteProposal | KnowledgeWriteProposal | DocumentWriteProposal>> => electron.harnessListWriteProposals(bookName, conversationId),
+  rejectWriteProposal: (_bookName: string, _conversationId: string, proposal: any): Promise<BodyWriteProposal | KnowledgeWriteProposal | DocumentWriteProposal> => proposal?.proposalType === 'document'
+    ? electron.harnessRejectDocumentProposal(proposal.proposalId, proposal.revision, proposal.confirmationCredential)
+    : Promise.reject(new Error('旧提案只保留历史记录，请使用四工具重新生成')),
+  applyWriteProposal: (_bookName: string, _conversationId: string, proposal: any) => proposal?.proposalType === 'document'
+    ? electron.harnessApplyDocumentProposal(proposal.proposalId, proposal.revision, proposal.confirmationCredential)
+    : Promise.reject(new Error('旧提案只保留历史记录，请使用四工具重新生成')),
+  undoWriteProposal: (_bookName: string, _conversationId: string, proposal: any) => proposal?.proposalType === 'document'
+    ? electron.harnessUndoDocumentProposal(proposal.proposalId, proposal.revision, proposal.confirmationCredential)
+    : Promise.reject(new Error('旧提案只保留历史记录，请使用四工具重新生成')),
   onEvent: (callback: (event: unknown) => void) => electron.onHarnessEvent(callback)
 }
 

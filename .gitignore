@@ -41,4 +41,7 @@ lerna-debug.log*
 **/.51mazi/api-config*.tmp
 
 docs
+!src/main/harness/docs/
+!src/main/harness/docs/*.md
+!src/main/harness/docs/*.js
 others

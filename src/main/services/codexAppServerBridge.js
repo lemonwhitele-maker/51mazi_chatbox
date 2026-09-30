@@ -8,6 +8,7 @@ import readline from 'node:readline'
 const codexRequire = createRequire(import.meta.url)
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
 const STARTUP_TIMEOUT_MS = 20_000
+export const CODEX_RUNTIME_VERSION = '0.145.0'
 
 function normalizeError(error, fallback = 'Codex App Server 请求失败') {
   if (error instanceof Error) return error
@@ -42,6 +43,15 @@ function findBundledCodexEntry() {
   }
 
   return candidates.find((candidate) => candidate && fs.existsSync(candidate)) || null
+}
+
+function bundledCodexVersion() {
+  try {
+    const packageJsonPath = codexRequire.resolve('@openai/codex/package.json')
+    return String(JSON.parse(fs.readFileSync(packageJsonPath, 'utf8')).version || '')
+  } catch {
+    return ''
+  }
 }
 
 function findBundledCodexExecutable() {
@@ -82,6 +92,17 @@ function resolveLaunchSpec() {
     }
   }
 
+  const installedVersion = bundledCodexVersion()
+  if (installedVersion !== CODEX_RUNTIME_VERSION) {
+    const error = new Error(
+      installedVersion
+        ? `Codex Runtime 版本不匹配：需要 ${CODEX_RUNTIME_VERSION}，当前 ${installedVersion}`
+        : `缺少固定 Codex Runtime ${CODEX_RUNTIME_VERSION}`
+    )
+    error.code = 'CODEX_RUNTIME_VERSION_MISMATCH'
+    throw error
+  }
+
   const bundledExecutable = findBundledCodexExecutable()
   if (bundledExecutable) {
     return {
@@ -101,11 +122,9 @@ function resolveLaunchSpec() {
     }
   }
 
-  return {
-    command: 'codex',
-    args: ['app-server', '--listen', 'stdio://'],
-    source: 'path'
-  }
+  const error = new Error(`固定 Codex Runtime ${CODEX_RUNTIME_VERSION} 不可执行`)
+  error.code = 'CODEX_RUNTIME_MISSING'
+  throw error
 }
 
 function sanitizeAccount(result) {
@@ -186,7 +205,14 @@ export class CodexAppServerBridge extends EventEmitter {
     this.intentionalStop = false
     this.stderrTail = []
 
-    const launch = resolveLaunchSpec()
+    let launch
+    try {
+      launch = resolveLaunchSpec()
+    } catch (error) {
+      const normalized = normalizeError(error, 'Codex Runtime 版本验证失败')
+      this.setState({ phase: 'error', runtimeSource: null, account: null, error: normalized.message })
+      throw normalized
+    }
     this.setState({
       phase: 'starting',
       runtimeSource: launch.source,

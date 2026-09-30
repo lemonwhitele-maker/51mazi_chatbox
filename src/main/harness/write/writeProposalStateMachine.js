@@ -9,6 +9,18 @@ export const TERMINAL_PROPOSAL_STATUSES = Object.freeze([
   'undone'
 ])
 
+const ALLOWED_TRANSITIONS = Object.freeze({
+  pending: new Set(['applying', 'rejected', 'superseded', 'stale', 'conflicted', 'failed']),
+  applying: new Set(['applied', 'pending', 'conflicted', 'failed']),
+  failed: new Set(['applying', 'applied', 'rejected', 'stale', 'conflicted']),
+  applied: new Set(['undone']),
+  rejected: new Set(),
+  superseded: new Set(),
+  stale: new Set(),
+  conflicted: new Set(),
+  undone: new Set()
+})
+
 export function publicWriteProposal(record) {
   if (!record) return null
   const proposal = structuredClone(record)
@@ -32,6 +44,11 @@ export function transitionWriteProposal(
   { failure = undefined, resolved = undefined } = {}
 ) {
   const previousStatus = record.status
+  if (previousStatus !== status && !ALLOWED_TRANSITIONS[previousStatus]?.has(status)) {
+    const error = new Error(`提案状态不能从 ${previousStatus} 转换为 ${status}`)
+    error.code = 'WRITE_PROPOSAL_INVALID_TRANSITION'
+    throw error
+  }
   record.status = status
   if (failure !== undefined) record.failure = failure
   const shouldResolve =

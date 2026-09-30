@@ -1,5 +1,6 @@
 import crypto from 'node:crypto'
 import yaml from 'js-yaml'
+import { SETTING_KINDS } from './knowledgeDocumentContract.js'
 
 export const KNOWLEDGE_DOCUMENT_PROFILES = Object.freeze({
   character: Object.freeze({
@@ -33,18 +34,7 @@ export const KNOWLEDGE_DOCUMENT_PROFILES = Object.freeze({
   })
 })
 
-const SETTING_KINDS = new Set([
-  'world-rule',
-  'location',
-  'organization',
-  'item',
-  'ability',
-  'technology',
-  'profession',
-  'term',
-  'historical-event',
-  'custom'
-])
+const SETTING_KIND_SET = new Set(SETTING_KINDS)
 const STATUSES = new Set(['draft', 'confirmed', 'planned', 'deprecated'])
 const SECTION_HEADING =
   /^###[ \t]+(.*?)[ \t]*<!--[ \t]*51:section=([A-Za-z0-9][A-Za-z0-9._-]*)[ \t]*-->[ \t]*$/
@@ -305,7 +295,7 @@ export function validateKnowledgeDocument(document, { expectedType = '', mode = 
       )
     )
   }
-  if (type === 'setting' && metadata.kind && !SETTING_KINDS.has(String(metadata.kind))) {
+  if (type === 'setting' && metadata.kind && !SETTING_KIND_SET.has(String(metadata.kind))) {
     diagnostics.push(
       diagnostic(
         'SETTING_KIND_UNSUPPORTED',

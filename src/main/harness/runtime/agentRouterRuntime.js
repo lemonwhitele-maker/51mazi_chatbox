@@ -1,3 +1,5 @@
+import { agentReasoningCapabilities } from '../../services/agentReasoning.js'
+
 export class AgentRouterRuntime {
   constructor({ codexRuntime, agentRuntime, configService } = {}) {
     this.id = 'agent-router'
@@ -5,9 +7,14 @@ export class AgentRouterRuntime {
     this.agentRuntime = agentRuntime
     this.configService = configService
     this.active = new Map()
+    this.catalogRequest = null
+    this.catalogTimeoutMs = 1500
   }
 
-  async getCapabilities() {
+  async getCapabilities({ model } = {}) {
+    const selected = this.resolve(model)
+    if (typeof selected.runtime?.getCapabilities === 'function')
+      return selected.runtime.getCapabilities({ model: selected.model })
     return {
       streaming: true,
       nativeToolCalling: true,
@@ -17,9 +24,33 @@ export class AgentRouterRuntime {
       dynamicTools: true,
       usageReporting: true,
       contextWindowTokens: 32768,
-      maxOutputTokens: 4096,
+      maxOutputTokens: 8192,
       experimental: []
     }
+  }
+
+  async getBookSandboxAdmission({ model = null, tools = [] } = {}) {
+    const selected = this.resolve(model)
+    if (typeof selected.runtime?.getBookSandboxAdmission !== 'function') {
+      return {
+        admitted: false,
+        contractVersion: 1,
+        runtimeId: selected.runtime?.id || 'unknown',
+        protocolVersion: String(selected.runtime?.protocolVersion || 'unknown'),
+        reason: '所选 Runtime 未提供单书准入证据'
+      }
+    }
+    return selected.runtime.getBookSandboxAdmission({ model: selected.model, tools })
+  }
+
+  async listBookSandboxRuntimes() {
+    const runtimes = [this.agentRuntime, this.codexRuntime]
+    return Promise.all(runtimes.map(async (runtime) => {
+      const admission = typeof runtime?.getBookSandboxAdmission === 'function'
+        ? await runtime.getBookSandboxAdmission()
+        : { admitted: false, runtimeId: runtime?.id || 'unknown', reason: '未提供准入证据' }
+      return admission
+    }))
   }
 
   resolve(model) {
@@ -41,34 +72,64 @@ export class AgentRouterRuntime {
     return { runtime: this.codexRuntime, model: null }
   }
 
-  async listModels() {
+  async listModels({ includeCodexModels = true } = {}) {
     const config = this.configService.getStoredConfig()
     const models = [
       {
         id: 'codex::default',
-        displayName: 'Codex 反代（默认模型）',
+        displayName: 'Codex 反代（兼容模式 / 默认模型）',
         isDefault: config.defaultRuntime === 'codex-app-server',
-        supportedReasoningEfforts: ['minimal', 'low', 'medium', 'high', 'xhigh']
+        supportedReasoningEfforts: []
       }
     ]
-    if (config.defaultRuntime === 'codex-app-server') {
+    let codexModelsUnavailable = false
+    if (includeCodexModels) {
+      let timer
       try {
-        const result = await this.codexRuntime.listModels()
+        if (!this.catalogRequest) {
+          this.catalogRequest = Promise.resolve().then(() => this.codexRuntime.listModels())
+          this.catalogRequest.then(
+            () => {
+              this.catalogRequest = null
+            },
+            () => {
+              this.catalogRequest = null
+            }
+          )
+        }
+        const result = await Promise.race([
+          this.catalogRequest,
+          new Promise((_, reject) => {
+            timer = setTimeout(
+              () => reject(new Error('Model catalogue timeout')),
+              this.catalogTimeoutMs
+            )
+          })
+        ])
         const source = Array.isArray(result)
           ? result
           : result?.models || result?.data?.models || result?.data || []
         for (const item of source) {
-          const id = String(item?.id || item?.model || '').trim()
+          const id = String(item?.model || item?.id || '').trim()
           if (!id) continue
           models.push({
             ...item,
             id: `codex::${id}`,
-            displayName: `Codex 反代 / ${item.displayName || item.display_name || item.name || id}`,
+            displayName: `Codex 反代（兼容模式）/ ${item.displayName || item.display_name || item.name || id}`,
             isDefault: false
           })
+          if (item.isDefault ?? item.is_default) {
+            models[0].supportedReasoningEfforts =
+              item.supportedReasoningEfforts || item.supported_reasoning_efforts || []
+            models[0].defaultReasoningEffort =
+              item.defaultReasoningEffort || item.default_reasoning_effort
+          }
         }
       } catch {
+        codexModelsUnavailable = true
         // Codex 反代仍保留为选项；目录暂不可用时使用其默认模型。
+      } finally {
+        clearTimeout(timer)
       }
     }
     for (const provider of this.configService.listConfiguredProviders()) {
@@ -76,10 +137,10 @@ export class AgentRouterRuntime {
         id: `agent::${provider.id}`,
         displayName: `${provider.name} / ${provider.model}`,
         isDefault: config.defaultRuntime === 'agent-api' && provider.isSelected,
-        supportedReasoningEfforts: []
+        ...agentReasoningCapabilities(provider)
       })
     }
-    return { models }
+    return { models, codexModelsUnavailable }
   }
 
   async *streamTurn(input) {

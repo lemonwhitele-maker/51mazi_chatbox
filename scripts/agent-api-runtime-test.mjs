@@ -71,6 +71,7 @@ const fetchImpl = async (_url, options) => {
 }
 const runtime = new AgentApiRuntime({ configService, fetchImpl })
 const events = []
+const trace = []
 const controller = new AbortController()
 for await (const event of runtime.streamTurn({
   conversationId: 'conversation-1',
@@ -86,7 +87,8 @@ for await (const event of runtime.streamTurn({
       inputSchema: { type: 'object', properties: { chapter: { type: 'string' } } }
     }
   ],
-  signal: controller.signal
+  signal: controller.signal,
+  trace: async (type, payload) => trace.push({ type, payload })
 })) {
   events.push(event)
   if (event.type === 'tool.call') {
@@ -106,6 +108,10 @@ assert.equal(events.at(-1)?.type, 'turn.completed')
 assert.equal(requests[1].messages.at(-1).role, 'tool')
 assert.equal(requests[0].tool_choice, 'required')
 assert.equal(requests[1].tool_choice, 'auto')
+assert.equal(trace.filter((item) => item.type === 'model.request').length, 2)
+assert.equal(trace.filter((item) => item.type === 'model.response').length, 2)
+assert.equal(trace[0].payload.messages[0].content, 'base\n\ndeveloper')
+assert.equal(trace[1].payload.message.tool_calls[0].function.arguments, '{"chapter":"1"}')
 
 const ignoredRequiredRuntime = new AgentApiRuntime({
   configService,

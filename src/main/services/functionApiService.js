@@ -1,3 +1,5 @@
+import { CLOUD_AI_PROVIDERS, validateCloudAiBaseUrl } from '../../shared/cloudAiProviders.js'
+
 const STORE_KEY = 'functionApi.config'
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com'
 const DEFAULT_DEEPSEEK_MODEL = 'deepseek-chat'
@@ -8,26 +10,41 @@ function cleanString(value, maxLength = 500) {
 }
 
 function normalizeProvider(value) {
-  return value === 'custom' ? 'custom' : 'deepseek'
+  return value === 'custom' || CLOUD_AI_PROVIDERS.some((item) => item.id === value)
+    ? value
+    : 'deepseek'
 }
 
 function defaultBaseUrl(provider) {
-  return provider === 'deepseek' ? DEFAULT_DEEPSEEK_BASE_URL : ''
+  return provider === 'deepseek'
+    ? DEFAULT_DEEPSEEK_BASE_URL
+    : CLOUD_AI_PROVIDERS.find((item) => item.id === provider)?.baseUrl || ''
 }
 
 function defaultModel(provider) {
-  return provider === 'deepseek' ? DEFAULT_DEEPSEEK_MODEL : ''
+  return provider === 'deepseek'
+    ? DEFAULT_DEEPSEEK_MODEL
+    : CLOUD_AI_PROVIDERS.find((item) => item.id === provider)?.model || ''
 }
 
 function normalizeConfig(value = {}, previous = {}) {
   const provider = normalizeProvider(value.provider ?? previous.provider)
+  const sameProvider = !previous.provider || previous.provider === provider
   const providedApiKey = Object.prototype.hasOwnProperty.call(value, 'apiKey')
   return {
     enabled: value.enabled === true,
     provider,
-    apiKey: providedApiKey ? cleanString(value.apiKey, 4096) : cleanString(previous.apiKey, 4096),
-    baseUrl: cleanString(value.baseUrl ?? previous.baseUrl ?? defaultBaseUrl(provider), 1000),
-    model: cleanString(value.model ?? previous.model ?? defaultModel(provider), 300),
+    apiKey: providedApiKey
+      ? cleanString(value.apiKey, 4096)
+      : cleanString(sameProvider ? previous.apiKey : '', 4096),
+    baseUrl: cleanString(
+      value.baseUrl ?? (sameProvider ? previous.baseUrl : undefined) ?? defaultBaseUrl(provider),
+      1000
+    ),
+    model: cleanString(
+      value.model ?? (sameProvider ? previous.model : undefined) ?? defaultModel(provider),
+      300
+    ),
     tasks: ['conversation_title'],
     lastValidationStatus: previous.lastValidationStatus || null,
     lastValidatedAt: previous.lastValidatedAt || null,
@@ -45,6 +62,7 @@ function publicConfig(config) {
 
 function endpoint(config) {
   const baseUrl = cleanString(config.baseUrl || defaultBaseUrl(config.provider), 1000).replace(/\/+$/, '')
+  validateCloudAiBaseUrl(config.provider, baseUrl)
   let parsed
   try {
     parsed = new URL(baseUrl)
@@ -52,6 +70,7 @@ function endpoint(config) {
     throw new Error('Base URL 格式无效')
   }
   if (!['https:', 'http:'].includes(parsed.protocol)) throw new Error('Base URL 仅支持 HTTP/HTTPS')
+  if (/\/chat\/completions$/i.test(parsed.pathname)) return baseUrl
   return `${baseUrl}/chat/completions`
 }
 

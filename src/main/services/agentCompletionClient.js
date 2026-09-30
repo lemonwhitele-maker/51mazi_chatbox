@@ -1,3 +1,21 @@
+import { agentReasoningCapabilities, agentReasoningParameters } from './agentReasoning.js'
+import { resolveModelBudgets } from './agentBudgets.js'
+import { validateCloudAiBaseUrl } from '../../shared/cloudAiProviders.js'
+
+// Keep the application's requirement to execute tools separate from the wire
+// parameter: DeepSeek rejects `required` while thinking is enabled.
+export function resolveAgentToolChoice({ provider, effort, tools = [], toolChoice }) {
+  if (!tools.length) return undefined
+  const requested = toolChoice || 'auto'
+  if (
+    requested === 'required' &&
+    agentReasoningCapabilities(provider).protocol === 'deepseek' &&
+    agentReasoningParameters(provider, effort).thinking?.type === 'enabled'
+  )
+    return 'auto'
+  return requested
+}
+
 function cleanBaseUrl(value) {
   return String(value || '')
     .trim()
@@ -7,6 +25,7 @@ function cleanBaseUrl(value) {
 export function chatCompletionsEndpoint(provider = {}) {
   const baseUrl = cleanBaseUrl(provider.baseUrl)
   if (!baseUrl) throw new Error('Agent API Base URL 不能为空')
+  validateCloudAiBaseUrl(provider.id, baseUrl)
   let parsed
   try {
     parsed = new URL(baseUrl)
@@ -47,19 +66,28 @@ export async function requestAgentCompletion({
   toolChoice,
   signal,
   fetchImpl = globalThis.fetch,
-  maxTokens = 4096,
-  temperature
+  maxTokens,
+  temperature,
+  effort
 }) {
   if (typeof fetchImpl !== 'function') throw new Error('当前环境不支持 Agent API 网络请求')
+  const outputTokens = resolveModelBudgets(provider, maxTokens).generationBudget.maxOutputTokens
   const body = {
     model: provider.model,
     messages,
-    tools,
-    tool_choice: toolChoice || (tools.length ? 'auto' : undefined),
-    max_tokens: maxTokens,
+    tools: tools.length ? tools : undefined,
+    tool_choice: resolveAgentToolChoice({ provider, effort, tools, toolChoice }),
+    max_tokens: outputTokens,
     temperature: Number.isFinite(temperature) ? temperature : undefined,
     stream: false
   }
+  Object.assign(body, agentReasoningParameters(provider, effort))
+  if (agentReasoningCapabilities(provider).protocol === 'openai') {
+    body.max_completion_tokens = outputTokens
+    delete body.max_tokens
+    delete body.temperature
+  }
+  if (body.thinking?.type === 'enabled') delete body.temperature
   const response = await fetchImpl(chatCompletionsEndpoint(provider), {
     method: 'POST',
     headers: requestHeaders(provider),

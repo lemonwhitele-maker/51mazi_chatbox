@@ -1,0 +1,36 @@
+import assert from 'node:assert/strict'
+import fs from 'node:fs/promises'
+import { createPinia, setActivePinia } from 'pinia'
+
+const source = (await fs.readFile(new URL('../src/renderer/src/stores/editor.js', import.meta.url), 'utf8'))
+  .replace("'@renderer/service/saveDiagnostics'", JSON.stringify(new URL('../src/renderer/src/service/saveDiagnostics.js', import.meta.url).href))
+  .replace("'pinia'", JSON.stringify(import.meta.resolve('pinia')))
+  .replace("'vue'", JSON.stringify(import.meta.resolve('vue')))
+const { useEditorStore } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`)
+setActivePinia(createPinia())
+const store = useEditorStore()
+store.setFile({ type: 'chapter', path: '正文/开端.txt' })
+store.startEditingSession('第一段。\n\n第二段。')
+store.setContent('第一段。\n\n第二段。', { isInitialLoad: true })
+store.setContent('第一段。\n\n第二段。') // highlight/format-only update
+assert.equal(store.hasUnsavedChanges, false)
+store.setContent('真实草稿')
+assert.equal(store.hasUnsavedChanges, true)
+store.setContent('第一段。\n\n第二段。') // user undo back to saved text
+assert.equal(store.hasUnsavedChanges, false)
+store.setContent('已提交保存的草稿')
+store.setContent('保存过程中继续输入')
+store.markSaved('已提交保存的草稿')
+assert.equal(store.hasUnsavedChanges, true, '保存旧快照不可清除后续输入的 dirty 状态')
+store.setContent('确认后正文', { isInitialLoad: true })
+store.markSaved()
+store.setContent('确认后正文')
+assert.equal(store.hasUnsavedChanges, false)
+store.setContent('撤销后正文', { isInitialLoad: true })
+store.markSaved()
+store.setContent('撤销后正文')
+assert.equal(store.hasUnsavedChanges, false)
+store.setContent('甲\r\n乙', { isInitialLoad: true })
+store.setContent('甲\n乙')
+assert.equal(store.hasUnsavedChanges, false)
+console.log('editor dirty state: unchanged text, real drafts, undo, in-flight saves and CRLF passed')

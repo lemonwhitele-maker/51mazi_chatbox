@@ -18,21 +18,29 @@
         <button type="button" :disabled="loading" @click="beginNewConversation">新对话</button>
       </div>
       <div class="harness-preferences">
+        <small>工具模式：读取、新建、全文写入、局部编辑</small>
         <label>
           <span>模型</span>
-          <select v-model="modelPreference" :disabled="loading || modelsLoading" @change="handleModelChange">
-            <option value="codex-default">跟随默认通道</option>
+          <select v-model="modelPreference" :disabled="loading || preferencesSaving" @change="handleModelChange">
+            <option value="codex-default">跟随 AI 设置默认</option>
+            <option v-if="missingSelectedModel" :value="modelPreference">{{ modelPreference }}（暂不可用）</option>
             <option v-for="model in modelCatalog" :key="model.id" :value="model.id">{{ model.name }}</option>
           </select>
         </label>
-        <label v-if="effortOptions.length">
-          <span>推理强度</span>
-          <select v-model="effortPreference" :disabled="loading || modelsLoading" @change="savePreferences">
-            <option value="codex-default">跟随模型默认</option>
-            <option v-for="effort in effortOptions" :key="effort" :value="effort">{{ effort }}</option>
+        <label>
+          <span>思考强度</span>
+          <select v-model="effortPreference" :disabled="loading || preferencesSaving || (!effortOptions.length && effortPreference === 'codex-default')" @change="savePreferences">
+            <option value="codex-default">{{ effortOptions.length ? '跟随默认' : '跟随默认（未提供可调选项）' }}</option>
+            <option v-if="effortPreference !== 'codex-default' && !effortOptions.includes(effortPreference)" :value="effortPreference">{{ effortLabel(effortPreference) }}（待确认）</option>
+            <option v-for="effort in effortOptions" :key="effort" :value="effort">{{ effortLabel(effort) }}</option>
           </select>
         </label>
-        <small v-if="modelsUnavailable">模型目录暂时不可用，将跟随设置中的默认通道。</small>
+        <small v-if="modelsLoading">正在补充模型目录，已显示的模型可以直接选择。</small>
+        <small v-if="modelsUnavailable">部分模型目录暂不可用，已保存的厂商配置仍可选择。</small>
+        <small v-if="missingSelectedModel">所选模型暂不可用，请刷新或重新选择。</small>
+        <small v-else-if="selectedModel">当前：{{ selectedModel.name }}。切换从下一条消息生效，仅保存在本对话。</small>
+        <small v-if="selectedModel?.id?.startsWith('codex::')">Codex 兼容模式保留只读沙箱；原生工具可能读取当前书籍以外的文件。项目工具的写入仍需确认。</small>
+        <button type="button" :disabled="loading || modelsLoading" @click="loadModels">刷新模型列表</button>
       </div>
       <div class="harness-status">{{ statusText }}</div>
       <div class="harness-messages">
@@ -66,7 +74,8 @@
           <BodyWriteProposalCard
             v-else
             :proposal="item.value"
-            :busy="turnRunning || busyProposalIds.has(item.value.proposalId)"
+            :busy="busyProposalIds.has(item.value.proposalId)"
+            :turn-running="turnRunning"
             @confirm="confirmProposal"
             @reject="rejectProposal"
             @copy="copyProposal"
@@ -89,7 +98,7 @@
         <small class="harness-input-hint">Enter 发送，Shift+Enter 换行</small>
         <div class="harness-actions">
           <button v-if="loading" type="button" @click="cancel">停止</button>
-          <button v-else type="submit" :disabled="!draft.trim()">发送</button>
+          <button v-else type="submit" :disabled="!draft.trim() || preferencesSaving || missingSelectedModel">发送</button>
         </div>
       </form>
       <div v-if="errorMessage" class="harness-error">{{ errorMessage }}</div>
@@ -98,6 +107,8 @@
 </template>
 
 <script setup>
+import { traceSave } from '@renderer/service/saveDiagnostics'
+
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import harnessClient, { normalizeHarnessWorkspaceContext } from '@renderer/service/harnessClient'
 import { shouldSendOnComposerKeydown } from './chatComposer.js'
@@ -129,6 +140,7 @@ const status = ref('idle')
 const errorMessage = ref('')
 const loading = ref(false)
 const modelsLoading = ref(false)
+const preferencesSaving = ref(false)
 const modelsUnavailable = ref(false)
 const modelCatalog = ref([])
 const modelPreference = ref('codex-default')
@@ -137,11 +149,19 @@ const copiedMessageId = ref(null)
 const referencePresentations = ref({})
 let unsubscribe = null
 let copiedMessageTimer = 0
+let modelLoadGeneration = 0
+let preferenceVersion = 0
 
 const selectedConversationValue = computed(() => draftConversation.value ? DRAFT_CONVERSATION_VALUE : activeConversationId.value || '')
 const statusText = computed(() => ({ idle: '就绪', preparing: '正在整理上下文', model_running: '正在生成', tool_requested: '正在调用资料工具', tool_running: '正在读取书籍资料', completed: '已完成', failed: '执行失败', error: '执行失败', cancelled: '已停止' })[status.value] || status.value)
-const selectedModel = computed(() => modelCatalog.value.find((model) => model.id === modelPreference.value) || modelCatalog.value.find((model) => model.isDefault) || modelCatalog.value[0] || null)
+const selectedModel = computed(() => modelPreference.value === 'codex-default'
+  ? modelCatalog.value.find((model) => model.isDefault) || null
+  : modelCatalog.value.find((model) => model.id === modelPreference.value || model.id === `codex::${modelPreference.value}`) || null)
+const missingSelectedModel = computed(() => modelPreference.value !== 'codex-default' && !selectedModel.value)
 const effortOptions = computed(() => selectedModel.value?.supportedReasoningEfforts || [])
+function effortLabel(effort) {
+  return selectedModel.value?.reasoningEffortLabels?.[effort] || ({ none: '关闭思考', minimal: '最低', low: '低', medium: '中', high: '高', xhigh: '极高', max: '最高' })[effort] || effort
+}
 const timeline = computed(() => mergeHarnessTimeline(messages.value, proposals.value))
 const turnRunning = computed(() =>
   ['preparing', 'model_running', 'tool_requested', 'tool_running'].includes(status.value)
@@ -202,6 +222,7 @@ function normalizeModel(model) {
     id,
     name: String(model.displayName || model.display_name || model.name || id),
     isDefault: Boolean(model.isDefault ?? model.is_default),
+    reasoningEffortLabels: model.reasoningEffortLabels || {},
     defaultReasoningEffort: normalizeEffort(model.defaultReasoningEffort || model.default_reasoning_effort),
     supportedReasoningEfforts: Array.isArray(rawEfforts) ? rawEfforts.map(normalizeEffort).filter(Boolean) : []
   }
@@ -212,33 +233,46 @@ function effortOverride() { return effortPreference.value === 'codex-default' ? 
 
 function applyConversationPreferences(conversation) {
   modelPreference.value = conversation?.modelPreference || 'codex-default'
+  if (modelPreference.value === 'agent-default') modelPreference.value = 'codex-default'
+  if (modelPreference.value !== 'codex-default' && !/^(agent|codex)::/.test(modelPreference.value)) {
+    modelPreference.value = `codex::${modelPreference.value}`
+  }
   effortPreference.value = conversation?.effortPreference || 'codex-default'
-  if (modelPreference.value !== 'codex-default' && modelCatalog.value.length && !modelCatalog.value.some((model) => model.id === modelPreference.value)) modelPreference.value = 'codex-default'
-  if (effortPreference.value !== 'codex-default' && !effortOptions.value.includes(effortPreference.value)) effortPreference.value = 'codex-default'
 }
 
 async function loadModels() {
+  const generation = ++modelLoadGeneration
   modelsLoading.value = true
-  try {
-    const result = await harnessClient.listModels()
+  const apply = (result) => {
     const source = Array.isArray(result) ? result : result?.models || result?.data?.models || result?.data || []
     modelCatalog.value = source.map(normalizeModel).filter(Boolean)
-    modelsUnavailable.value = !modelCatalog.value.length
-    if (modelPreference.value !== 'codex-default' && !modelCatalog.value.some((model) => model.id === modelPreference.value)) modelPreference.value = 'codex-default'
-    if (effortPreference.value !== 'codex-default' && !effortOptions.value.includes(effortPreference.value)) effortPreference.value = 'codex-default'
+    modelsUnavailable.value = !modelCatalog.value.length || result?.codexModelsUnavailable === true
+  }
+  try {
+    const local = await harnessClient.listModels({ includeCodexModels: false })
+    if (generation !== modelLoadGeneration) return
+    apply(local)
+    const full = await harnessClient.listModels({ includeCodexModels: true })
+    if (generation !== modelLoadGeneration) return
+    apply(full)
   } catch {
-    modelCatalog.value = []
-    modelsUnavailable.value = true
-    modelPreference.value = 'codex-default'
-    effortPreference.value = 'codex-default'
+    if (generation === modelLoadGeneration) modelsUnavailable.value = true
   } finally {
-    modelsLoading.value = false
+    if (generation === modelLoadGeneration) modelsLoading.value = false
   }
 }
 
 async function loadConversations() {
   if (!props.bookName) { conversations.value = []; activeConversationId.value = null; draftConversation.value = false; messages.value = []; proposals.value = []; return }
-  conversations.value = await harnessClient.listConversations(props.bookName)
+  const requestedBook = props.bookName
+  await harnessClient.bindBook(requestedBook)
+  if (requestedBook !== props.bookName) return
+  try {
+    conversations.value = await harnessClient.listConversations(requestedBook)
+  } catch (error) {
+    if (requestedBook !== props.bookName) return
+    throw error
+  }
   const activeStillExists = conversations.value.some((item) => item.conversationId === activeConversationId.value)
   if (!draftConversation.value && !activeStillExists) {
     if (conversations.value[0]) {
@@ -255,22 +289,23 @@ async function loadConversations() {
 
 async function loadMessages() {
   if (!props.bookName || !activeConversationId.value) { messages.value = []; proposals.value = []; return }
+  const bookName = props.bookName
+  const conversationId = activeConversationId.value
+  const version = preferenceVersion
   const [data, restoredProposals] = await Promise.all([
-    harnessClient.readConversation(props.bookName, activeConversationId.value),
-    harnessClient.listWriteProposals(props.bookName, activeConversationId.value)
+    harnessClient.readConversation(bookName, conversationId),
+    harnessClient.listWriteProposals(bookName, conversationId)
   ])
+  if (bookName !== props.bookName || conversationId !== activeConversationId.value || draftConversation.value) return
   messages.value = data.transcript.filter((item) => item.type === 'message.user' || item.type === 'message.assistant').map((item) => ({ id: item.messageId || item.eventId, role: item.type === 'message.user' ? 'user' : 'assistant', text: item.payload?.text || '', references: item.payload?.references || [], delivery: 'sent', createdAt: item.createdAt || '' }))
   void hydrateReferences(messages.value)
   proposals.value = restoredProposals
   const preview = [...restoredProposals].reverse().find((item) => item.status === 'pending')
-  if (preview?.proposalType !== 'knowledge') emit('preview-proposal', preview)
+  if (preview && !preview.proposalType) emit('preview-proposal', preview)
   else emit('clear-proposal-preview')
   streamingText.value = ''
   status.value = data.state.status === 'running' ? 'idle' : data.state.status
-  modelPreference.value = data.state.modelPreference || 'codex-default'
-  effortPreference.value = data.state.effortPreference || 'codex-default'
-  if (modelPreference.value !== 'codex-default' && modelCatalog.value.length && !modelCatalog.value.some((model) => model.id === modelPreference.value)) modelPreference.value = 'codex-default'
-  if (effortPreference.value !== 'codex-default' && !effortOptions.value.includes(effortPreference.value)) effortPreference.value = 'codex-default'
+  if (!preferencesSaving.value && version === preferenceVersion) applyConversationPreferences(data.state)
 }
 
 function beginNewConversation() {
@@ -301,13 +336,18 @@ function localConversationTitle(text) {
 }
 
 async function savePreferences() {
+  preferenceVersion += 1
   if (!props.bookName || !activeConversationId.value) return
+  const conversationId = activeConversationId.value
+  preferencesSaving.value = true
   try {
-    const updated = await harnessClient.updateConversationSettings(props.bookName, activeConversationId.value, modelOverride(), effortOverride(), 'agent-router')
-    const index = conversations.value.findIndex((item) => item.conversationId === activeConversationId.value)
+    const updated = await harnessClient.updateConversationSettings(props.bookName, conversationId, modelOverride(), effortOverride(), 'agent-router')
+    const index = conversations.value.findIndex((item) => item.conversationId === conversationId)
     if (index >= 0) conversations.value[index] = { ...conversations.value[index], ...updated }
   } catch (error) {
     errorMessage.value = error?.message || '模型设置保存失败'
+  } finally {
+    preferencesSaving.value = false
   }
 }
 
@@ -317,7 +357,7 @@ function handleModelChange() {
 }
 
 async function send() {
-  if (!draft.value.trim() || loading.value) return
+  if (!draft.value.trim() || loading.value || preferencesSaving.value || missingSelectedModel.value) return
   const text = draft.value.trim()
   const localMessageId = `local-user-${Date.now()}`
   draft.value = ''
@@ -331,7 +371,7 @@ async function send() {
         props.bookName,
         localConversationTitle(text),
         'agent-router',
-        { model: modelOverride(), effort: effortOverride(), autoTitle: true }
+    { model: modelOverride(), effort: effortOverride(), autoTitle: true }
       )
       conversations.value = [item, ...conversations.value.filter((entry) => entry.conversationId !== item.conversationId)]
       activeConversationId.value = item.conversationId
@@ -375,28 +415,42 @@ function setProposalBusy(proposalId, busy) {
 function upsertProposal(proposal) {
   if (!proposal?.proposalId) return
   const index = proposals.value.findIndex((item) => item.proposalId === proposal.proposalId)
-  if (index >= 0) proposals.value[index] = proposal
+  if (index >= 0)
+    proposals.value[index] = {
+      ...proposals.value[index],
+      ...proposal,
+      target: { ...proposals.value[index].target, ...proposal.target },
+      preview: proposal.preview || proposals.value[index].preview
+    }
   else proposals.value = [...proposals.value, proposal]
 }
 
 async function confirmProposal(proposal) {
   if (!proposal || turnRunning.value || busyProposalIds.value.has(proposal.proposalId)) return
   errorMessage.value = ''
-  const check = proposal.proposalType === 'knowledge' ? null : await props.validateProposal?.(proposal)
+  const check = proposal.proposalType ? null : await props.validateProposal?.(proposal)
   if (check && check.ok === false) {
     errorMessage.value = check.message || '当前正文与提案目标不一致，请重新生成提案'
     if (check.code !== 'WRITE_PROPOSAL_CONTENT_STALE') return
   }
   setProposalBusy(proposal.proposalId, true)
   try {
+    if (!await checkProposalDraft(proposal)) return
     const result = await harnessClient.applyWriteProposal(
       props.bookName,
       activeConversationId.value,
-      proposal.proposalId
+      proposal
     )
+    traceSave('proposal.apply-result', { proposalId: proposal.proposalId, targetId: result.proposal?.target?.documentId, contentHash: result.contentHash, contentLength: typeof result.content === 'string' ? result.content.length : -1 })
     upsertProposal(result.proposal)
     emit('clear-proposal-preview', proposal.proposalId)
-    if (result.proposal?.proposalType === 'knowledge') notifyKnowledgeProposalApplied(result.proposal)
+    if (
+      result.proposal?.proposalType === 'document' &&
+      result.proposal?.target?.type === 'chapter'
+    )
+      emit('proposal-content-applied', { proposal: result.proposal, result })
+    else if (['knowledge', 'document'].includes(result.proposal?.proposalType))
+      notifyKnowledgeProposalApplied(result.proposal)
     else emit('proposal-content-applied', { proposal: result.proposal, result })
   } catch (error) {
     errorMessage.value = error?.message || '写入未保存，正式资料保持原内容，请重试'
@@ -413,7 +467,7 @@ async function rejectProposal(proposal) {
     const updated = await harnessClient.rejectWriteProposal(
       props.bookName,
       activeConversationId.value,
-      proposal.proposalId
+      proposal
     )
     upsertProposal(updated)
     emit('clear-proposal-preview', proposal.proposalId)
@@ -451,17 +505,24 @@ async function copyMessage(message) {
 }
 
 async function undoProposal(proposal) {
-  if (!proposal || busyProposalIds.value.has(proposal.proposalId)) return
+  if (!proposal || turnRunning.value || busyProposalIds.value.has(proposal.proposalId)) return
   setProposalBusy(proposal.proposalId, true)
   errorMessage.value = ''
   try {
+    if (!await checkProposalDraft(proposal)) return
     const result = await harnessClient.undoWriteProposal(
       props.bookName,
       activeConversationId.value,
-      proposal.proposalId
+      proposal
     )
     upsertProposal(result.proposal)
-    if (result.proposal?.proposalType === 'knowledge') notifyKnowledgeProposalApplied(result.proposal)
+    if (
+      result.proposal?.proposalType === 'document' &&
+      result.proposal?.target?.type === 'chapter'
+    )
+      emit('proposal-content-applied', { proposal: result.proposal, result })
+    else if (['knowledge', 'document'].includes(result.proposal?.proposalType))
+      notifyKnowledgeProposalApplied(result.proposal)
     else emit('proposal-content-applied', { proposal: result.proposal, result })
   } catch (error) {
     errorMessage.value = error?.message || '正式资料已变化，无法安全撤销'
@@ -469,6 +530,18 @@ async function undoProposal(proposal) {
   } finally {
     setProposalBusy(proposal.proposalId, false)
   }
+}
+
+async function checkProposalDraft(proposal) {
+  if (proposal.proposalType !== 'document') return true
+  const editor = normalizeHarnessWorkspaceContext(await props.getEditorContext?.('document'))
+  // The backend returns a canonical virtual path for both editor and proposal.
+  const state = await harnessClient.updateEditorState(props.bookName, editor)
+  if (state?.dirty && state.path && state.path === proposal.target?.path) {
+    errorMessage.value = '目标资料有未保存的编辑内容，请先保存或放弃草稿'
+    return false
+  }
+  return true
 }
 
 function notifyKnowledgeProposalApplied(proposal) {
@@ -494,6 +567,10 @@ function handleEvent(event) {
   }
   if (event?.conversationId !== activeConversationId.value) return
   if (event.type === 'write.proposal.created' || event.type === 'write.proposal.updated') {
+    if (event.proposal?.proposalType === 'document') {
+      void loadMessages()
+      return
+    }
     upsertProposal(event.proposal)
     if (event.proposal?.status === 'pending' && event.proposal?.proposalType !== 'knowledge') emit('preview-proposal', event.proposal)
     else emit('clear-proposal-preview', event.proposalId)
@@ -525,6 +602,7 @@ onMounted(() => {
   void loadModels()
 })
 onBeforeUnmount(() => {
+  modelLoadGeneration += 1
   unsubscribe?.()
   window.removeEventListener('agent-api-config-changed', handleAgentConfigChanged)
   window.clearTimeout(copiedMessageTimer)
